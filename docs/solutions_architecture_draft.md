@@ -26,6 +26,55 @@ The architecture is designed to serve two primary executive personas:
 ## 3. Architecture Overview: Domain-Oriented Layered Design
 The foundational data platform is built entirely on **Google Cloud Platform (GCP)**. It follows a domain-oriented, layered architecture with clear separation of concerns across ingestion, storage, transformation, and consumption.
 
+```mermaid
+graph LR
+    subgraph Data Sources
+        RawCSV[Raw CSV Extracts]
+    end
+
+    subgraph Raw Layer
+        GCS[(Cloud Storage)]
+        BQE[BigQuery External Tables]
+        Eventarc((Eventarc))
+        RawCSV -- "Upload" --> GCS
+        GCS -- "Trigger" --> Eventarc
+        GCS -. "Query Interface" .-> BQE
+    end
+
+    subgraph Curated Layer
+        CR[Cloud Run Orchestrator]
+        DBT[dbt Core Models]
+        BQC[(BigQuery Curated Tables)]
+        Eventarc -- "Start pipeline" --> CR
+        CR -- "Execute Models" --> DBT
+        BQE -- "Read Data" --> DBT
+        DBT -- "Write Transformed" --> BQC
+    end
+
+    subgraph Consumption Layer
+        BQM[(BigQuery Data Marts)]
+        GenAI[Vertex AI/BQML GenAI]
+        BI[Looker / Looker Studio]
+        BQC -- "Denormalize" --> BQM
+        BQM -- "Serve Data" --> BI
+        BQM -- "Feed Data" --> GenAI
+    end
+
+    subgraph Personas
+        CCO((Chief Customer Officer))
+        CTO((Chief Technology Officer))
+        BI -- "Dashboards" --> CCO
+        BI -- "Dashboards" --> CTO
+        GenAI -- "Conversational Analytics" --> CCO
+    end
+    
+    style GCS fill:#b3e5fc,stroke:#0288d1
+    style BQE fill:#bbdefb,stroke:#1976d2
+    style BQC fill:#bbdefb,stroke:#1976d2
+    style BQM fill:#bbdefb,stroke:#1976d2
+    style DBT fill:#f8bbd0,stroke:#c2185b
+```
+
 ## 4. Infrastructure & Automation
 To ensure reliability and reproducibility, the infrastructure is managed as code:
 *   **Terraform:** Deploying the entire GCP project, datasets, buckets, service accounts, and IAM policies.
