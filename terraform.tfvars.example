@@ -1,0 +1,38 @@
+# Example Terraform variables configuration
+# Copy this file to terraform.tfvars and customize for your environment
+
+# Required variables - must be set
+project_id           = "manish-sandpit"
+region              = "us-central1"               # or australia-southeast1, europe-west1, etc.
+environment         = "dev"                       # dev, staging, prod
+project_name        = "manish-sandpit"             # Base name for your project
+organization_prefix = "intelia"                 # Your company/org prefix
+
+# Optional overrides - uncomment and modify if needed
+# raw_dataset_name        = "raw_ext"
+# curated_dataset_name    = "curated"  
+# consumption_dataset_name = "consumption_marts"
+# service_account_name    = "custom-agent-sa"
+# service_account_display_name = "Custom Agent SA"
+# raw_data_retention_days = 90
+
+# Additional labels for resources
+labels = {
+  owner       = "data-team"
+  cost_center = "engineering"
+  project     = "data-platform"
+}
+
+# Example configurations for different environments:
+#
+# Development:
+# environment = "dev"
+# raw_data_retention_days = 7
+#
+# Staging:
+# environment = "staging"
+# raw_data_retention_days = 30
+#
+# Production:  
+# environment = "prod"
+# raw_data_retention_days = 365

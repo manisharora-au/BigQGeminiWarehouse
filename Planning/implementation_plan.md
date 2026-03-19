@@ -26,25 +26,25 @@ This document outlines the detailed, step-by-step implementation plan to execute
     *   Define schema for `customers.csv`, `products.csv`, `orders.csv`, and `order_items.csv`.
     *   Create BigQuery External Tables in the `raw_ext` dataset pointing to the GCS bucket to allow direct querying without full ingestion.
 
-## Phase 3: Transformation & Orchestration (dbt + Cloud Run) (Day 2-3)
+## Phase 3: Transformation & Orchestration (Dataform + Cloud Run) (Day 2-3)
 **Goal:** Build the curated layer and automate the pipeline for delta updates.
 
-1.  **dbt Project Initialization:**
-    *   Initialize a new dbt Core project.
-    *   Configure `profiles.yml` to connect to the BigQuery project using the execution service account.
-2.  **Develop dbt Models:**
-    *   **Staging:** Create staging models to clean, cast data types, and standardize column names from the `raw_ext` tables.
+1.  **Dataform Repository Initialization:**
+    *   Initialize a new Dataform repository within the GCP project.
+    *   Configure workspace settings to connect to the BigQuery project using the execution service account.
+2.  **Develop Dataform Models:**
+    *   **Staging:** Create `.sqlx` files to clean, cast data types, and standardize column names from the `raw_ext` tables.
     *   **Curated:** Create conformed dimension and fact tables (e.g., handling deduplication or slowly changing dimensions if required).
-    *   Add dbt tests (unique, not null, referential integrity) and documentation.
+    *   Add Dataform assertions (unique, not null, referential integrity) and inline documentation.
 3.  **Containerize & Orchestrate (Cloud Run + Eventarc):**
-    *   Write a `Dockerfile` to package the dbt project and dependencies.
-    *   Deploy the container as a Cloud Run job.
+    *   Write a script or service to trigger the Dataform workflow execution via API.
+    *   Deploy the service as a Cloud Run container.
     *   Configure Eventarc to listen for GCS file creation events in the raw bucket and trigger the Cloud Run job, automating the pipeline when delta datasets arrive.
 
 ## Phase 4: Consumption Layer & Data Marts (Day 3-4)
 **Goal:** Serve the CCO and CTO personas with tailored data marts and dashboards.
 
-1.  **Develop Data Mart Models (dbt):**
+1.  **Develop Data Mart Models (Dataform):**
     *   Build the CCO Data Mart: Tables focused on revenue, customer lifetime value, and retention.
     *   Build the CTO Data Mart: Tables focused on system metrics, data freshness, and processing volumes.
 2.  **Looker Studio Dashboards:**

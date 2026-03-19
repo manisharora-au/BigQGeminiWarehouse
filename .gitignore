@@ -1,4 +1,20 @@
 *.csv
 *.pdf
 .DS_Store
-terraform/.terraform
+
+# Virtual environment
+.venv/
+bin/
+include/
+lib/
+pyvenv.cfg
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform.tfvars
+
+# Scripts and logs
+*.log
+scripts/ExternalTables.sql
+impCommands/

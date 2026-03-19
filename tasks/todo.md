@@ -27,3 +27,26 @@
 - [x] Create `terraform/main.tf` to provision the foundational infrastructure:
     - Raw GCS bucket (`gs://intelia-hackathon-files-raw`).
     - BigQuery Datasets: `raw_ext`, `curated`, `consumption_marts`.
+
+## Task 5: Refine Solutions Architecture Document
+- [x] Update `docs/solutions_architecture_draft.md` to explicitly define the roles of all GCP services used.
+- [x] Replace all references to `dbt` with `Dataform` in the architecture document (including diagrams).
+- [x] Expand the Generative AI section to highlight Vertex AI, `ML.GENERATE_TEXT` in BigQuery, and Agentic Workflows.
+- [x] Update `Planning/implementation_plan.md` to align with the Dataform shift.
+
+# Phase 2: Data Ingestion & Raw Layer Setup - ToDo
+
+## Task 6: Initial Data Load
+- [x] Copy initial `.csv` files from `gs://intelia-hackathon-files/` to local project.
+- [x] Upload files to the raw GCS bucket (`gs://intelia-hackathon-dev-raw-data`).
+
+## Task 7: BigQuery External Tables
+- [x] Define schema for `customers.csv`, `products.csv`, `orders.csv`, and `order_items.csv`.
+- [x] Create BigQuery External Tables in the `raw_ext` dataset pointing to the GCS bucket.
+- [x] Verify table access with `bq query`.
+
+# Phase 3: Transformation & Orchestration (Dataform + Cloud Run) - ToDo
+
+## Task 8: Set up BigQuery Connection/Utility
+- [/] Create a Python utility for "Antigravity" to query BigQuery easily.
+- [ ] Initialize Dataform repository via GCP Console or CLI.
