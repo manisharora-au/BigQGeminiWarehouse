@@ -12,6 +12,7 @@ pyvenv.cfg
 # Terraform
 terraform/.terraform/
 terraform/*.tfstate*
+terraform/*.tstate*
 terraform/terraform.tfvars
 
 # Scripts and logs

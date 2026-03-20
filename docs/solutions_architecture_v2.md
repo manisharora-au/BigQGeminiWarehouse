@@ -1,6 +1,6 @@
 # Solutions Architecture
 **BigQuery & Gemini Data Warehouse Challenge**
-*intelia Hackathon — v2.0 DRAFT*
+*intelia Hackathon — v2.1 DRAFT*
 
 ---
 
@@ -24,6 +24,8 @@
 This document outlines the proposed solutions architecture for the intelia Hackathon: BigQuery & Gemini Data Warehouse Challenge. The solution transforms raw synthetic retail data (Customers, Products, Orders) into a fully operational, scalable, and intelligent data warehouse on Google Cloud Platform (GCP) that delivers actionable business insights to executive stakeholders.
 
 The architecture follows a **medallion-style, domain-oriented layered design** — Raw → Curated → Consumption — built entirely on native GCP services, with GenAI embedded throughout rather than bolted on. Every layer is governed, hardened for security, and reproducible via Infrastructure-as-Code (IaC), allowing the entire solution to be torn down and redeployed to a net-new GCP project with a single pipeline run.
+
+A **pre-ingestion validation gate** (Cloud Run) sits between file arrival and downstream processing. It enforces schema contracts — column names, count, order, encoding, and file integrity — before any file is permitted to enter the curated pipeline. Files that fail validation are quarantined automatically and never reach BigQuery.
 
 ---
 
@@ -56,21 +58,29 @@ graph LR
         TF -- "Provisions" --> SA[Service Accounts & IAM]
     end
 
-    subgraph "Layer 1 — Raw (GCS + BigQuery External Tables)"
+    subgraph "Layer 1 — Raw (GCS + Validation Gate + BigQuery External Tables)"
         GCS[(Cloud Storage\ngs://intelia-hackathon-files/)]
         BQE[BigQuery External Tables\nraw_customers · raw_products · raw_orders]
         Eventarc((Eventarc\nGCS Trigger))
+        VAL[Cloud Run\nValidation Gate]
+        QUAR[(GCS Quarantine\nraw/quarantine/)]
+        VALID[(GCS Validated\nraw/validated/)]
+        VLOG[BigQuery\nvalidation_log]
         RawCSV -- "Initial Load" --> GCS
         DeltaCSV -- "Delta Drop" --> GCS
         GCS -- "Object Finalise Event" --> Eventarc
-        GCS -. "Federated Query" .-> BQE
+        Eventarc -- "HTTP Trigger" --> VAL
+        VAL -- "PASS: move file" --> VALID
+        VAL -- "FAIL: quarantine file" --> QUAR
+        VAL -- "Write result" --> VLOG
+        VALID -. "Federated Query" .-> BQE
     end
 
     subgraph "Layer 2 — Curated (BigQuery + Dataform)"
         CR[Cloud Run\nOrchestrator]
         DF[Dataform\nSQLX Pipelines]
         BQC[(BigQuery\nDataset: curated)]
-        Eventarc -- "HTTP Trigger" --> CR
+        VAL -- "PASS: trigger pipeline" --> CR
         CR -- "Trigger Workflow Execution" --> DF
         BQE -- "Source" --> DF
         DF -- "stg_* → int_* → curated_*" --> BQC
@@ -108,6 +118,9 @@ graph LR
     style DF fill:#f8bbd0,stroke:#c2185b
     style GenAI fill:#e8f5e9,stroke:#388e3c
     style DPX fill:#fff9c4,stroke:#f9a825
+    style VAL fill:#ffe0b2,stroke:#e65100
+    style QUAR fill:#ffcdd2,stroke:#c62828
+    style VALID fill:#c8e6c9,stroke:#2e7d32
 ```
 
 ---
@@ -125,12 +138,12 @@ All GCP resources are organised into reusable, composable Terraform modules:
 | Module | Resources Managed |
 |---|---|
 | `modules/project` | APIs enabled, billing alerts ($200 cap), project-level labels |
-| `modules/storage` | GCS buckets (raw, archive, temp), lifecycle rules, versioning, CMEK |
-| `modules/bigquery` | Datasets (`raw_external`, `curated`, `marts`, `governance`), table schemas, default encryption |
+| `modules/storage` | GCS buckets (raw, validated, quarantine, archive, temp), lifecycle rules, versioning, CMEK |
+| `modules/bigquery` | Datasets (`raw_external`, `curated`, `marts`, `governance`), table schemas including `validation_log` and `ingestion_log`, default encryption |
 | `modules/iam` | Service accounts, IAM bindings (least-privilege roles), Workload Identity |
 | `modules/networking` | VPC Service Controls perimeter, Private Google Access |
 | `modules/dataplex` | Lakes, zones, assets linked to GCS and BigQuery datasets |
-| `modules/monitoring` | Log sinks, alerting policies, budget alerts, dashboard configs |
+| `modules/monitoring` | Log sinks, alerting policies (including validation failure alerts), budget alerts, dashboard configs |
 
 **Key Terraform patterns:**
 - All sensitive values (e.g., service account keys, API tokens) are stored in **Secret Manager** and referenced via `data "google_secret_manager_secret_version"` — never hardcoded in `.tfvars`.
@@ -166,6 +179,7 @@ Each functional component runs under a dedicated, least-privilege service accoun
 |---|---|---|
 | `sa-terraform@` | IaC provisioning (CI/CD only) | `roles/owner` scoped to project (CI only — not human-accessible) |
 | `sa-gcs-ingest@` | Writing raw files to GCS | `roles/storage.objectCreator` on raw bucket only |
+| `sa-cloudrun-validator@` | Pre-ingestion schema validation | `roles/storage.objectViewer` on raw bucket; `roles/storage.objectCreator` on validated/quarantine prefixes; `roles/bigquery.dataEditor` on `governance.validation_log` |
 | `sa-cloudrun-orchestrator@` | Triggering Dataform executions | `roles/dataform.editor`, `roles/run.invoker` |
 | `sa-dataform@` | Running SQL transformations | `roles/bigquery.dataEditor` on curated/marts datasets; `roles/bigquery.jobUser` |
 | `sa-vertexai@` | Vertex AI agent and BQML calls | `roles/aiplatform.user`, `roles/bigquery.dataViewer` on marts only |
@@ -190,9 +204,9 @@ gs://intelia-hackathon-files/
 ├── raw/
 │   ├── customers/
 │   │   ├── full/
-│   │   │   └── customers_20250101.csv          ← initial full load
+│   │   │   └── customers_20250101.csv          ← initial full load (landing zone)
 │   │   └── delta/
-│   │       └── customers_delta_20250315.csv    ← incremental drops
+│   │       └── customers_delta_20250315.csv    ← incremental drops (landing zone)
 │   ├── products/
 │   │   ├── full/
 │   │   └── delta/
@@ -200,9 +214,21 @@ gs://intelia-hackathon-files/
 │       ├── full/
 │       └── delta/
 │
-├── archive/                                    ← post-processing move
+├── validated/                                  ← PASS: files cleared by validation gate
+│   ├── customers/
+│   ├── products/
+│   └── orders/
+│
+├── quarantine/                                 ← FAIL: rejected files held for review
+│   ├── customers/
+│   ├── products/
+│   └── orders/
+│
+├── archive/                                    ← post-processing move (from validated/)
 └── temp/                                       ← staging for Cloud Run jobs
 ```
+
+> **Landing vs Validated:** Files land in `raw/` first. The validation gate is the only process permitted to move files to `validated/` or `quarantine/`. External tables are built over `validated/` only — quarantined files never reach BigQuery.
 
 **Bucket configuration:**
 - **Versioning:** Enabled — all object versions retained for audit trail.
@@ -213,20 +239,19 @@ gs://intelia-hackathon-files/
 
 ### 5.3 BigQuery External Tables
 
-External tables are created over the raw GCS CSVs to enable immediate SQL querying without data movement:
+External tables are created over the **validated** GCS prefix (files that have passed the schema validation gate) to enable immediate SQL querying without data movement:
 
 ```sql
--- Example: External table over raw customers
+-- Example: External table over validated customers
 CREATE OR REPLACE EXTERNAL TABLE `raw_external.ext_customers`
 OPTIONS (
   format = 'CSV',
-  uris   = ['gs://intelia-hackathon-files/raw/customers/full/*.csv',
-             'gs://intelia-hackathon-files/raw/customers/delta/*.csv'],
+  uris   = ['gs://intelia-hackathon-files/validated/customers/*.csv'],
   skip_leading_rows = 1,
   field_delimiter = ',',
   hive_partitioning_options = STRUCT(
     mode = 'AUTO',
-    source_uri_prefix = 'gs://intelia-hackathon-files/raw/customers/'
+    source_uri_prefix = 'gs://intelia-hackathon-files/validated/customers/'
   )
 );
 ```
@@ -234,28 +259,139 @@ OPTIONS (
 - **Hive partitioning** on the `full/` vs `delta/` path prefix allows the Dataform models to selectively query only new delta files in incremental runs.
 - Three external tables are defined: `ext_customers`, `ext_products`, `ext_orders`.
 
-### 5.4 Ingestion Trigger Workflow (Event-Driven)
+### 5.4 Pre-Ingestion Validation Gate (Cloud Run)
+
+A dedicated Cloud Run service acts as a **schema contract enforcer** between file arrival and downstream processing. No file reaches the curated pipeline — or even the BigQuery external tables — without passing this gate.
+
+#### Design Decision: Cloud Run over Dataflow
+
+Cloud Run is used here rather than Dataflow for the following reasons:
+
+| Criteria | Cloud Run | Dataflow |
+|---|---|---|
+| **Validation scope** | Header row + sample rows only | Overkill — full file scan |
+| **Cold start** | < 2 seconds | 2–3 minutes |
+| **Cost** | Pay-per-invocation (~$0.00 per small file) | Minimum job overhead |
+| **Complexity** | Single Python container | Apache Beam pipeline required |
+| **Fit for purpose** | ✅ Right tool for metadata checks | Better suited to large-scale transforms |
+
+Dataform assertions remain the in-warehouse quality layer for row-level data checks once data is loaded.
+
+#### Validation Checks Performed
+
+| Check | Detail |
+|---|---|
+| **Column names** | Header row must exactly match expected schema for the detected entity type |
+| **Column count** | Number of columns must equal expected count — detects truncated or malformed headers |
+| **Column order** | Column sequence must match expected order (external tables are position-sensitive) |
+| **Non-empty file** | File must contain at least one data row beyond the header |
+| **Encoding** | File must be UTF-8 encoded — rejects BOM or Latin-1 encoded files |
+| **Delimiter** | Field delimiter must be a comma — detects tab or pipe corruption |
+| **Date format sample** | Samples first 10 rows to verify date columns parse correctly |
+| **File size guard** | Rejects suspiciously small files (< 100 bytes) or anomalously large deltas |
+
+#### Expected Schemas (Contract Definitions)
+
+```python
+EXPECTED_SCHEMAS = {
+    "customers": [
+        "customer_id", "first_name", "last_name",
+        "email", "signup_date", "region", "loyalty_tier"
+    ],
+    "products": [
+        "product_id", "product_name", "category",
+        "unit_price", "stock_quantity", "supplier_id"
+    ],
+    "orders": [
+        "order_id", "customer_id", "product_id",
+        "order_date", "quantity", "total_amount", "status"
+    ]
+}
+```
+
+These schema contracts are version-controlled in Git alongside the Dataform SQLX models. Any schema change requires a deliberate contract update and redeployment — preventing silent schema drift.
+
+#### Validation Outcome Routing
 
 ```
-New delta file lands in GCS
+File arrives in gs://.../raw/{entity}/delta/
     │
     ▼
-Eventarc (Object Finalised event on gs://intelia-hackathon-files/raw/**/delta/**)
+Cloud Run Validator (sa-cloudrun-validator@)
     │
-    ▼
-Cloud Run (orchestrator service — sa-cloudrun-orchestrator@)
-    │   Parses the event payload to identify: entity type (customers/products/orders)
-    │   Logs file metadata to BigQuery audit table (pipeline_runs.ingestion_log)
+    ├── Reads object metadata + header row only (no full file scan)
+    ├── Detects entity type from GCS object path
+    ├── Runs all validation checks against EXPECTED_SCHEMAS[entity]
     │
-    ▼
-Dataform Workflow Execution API
-    │   Triggers the relevant SQLX incremental run for the detected entity
+    ├── PASS ──► Copy file to gs://.../validated/{entity}/
+    │            Write PASS record to governance.validation_log
+    │            Invoke Cloud Run Orchestrator → trigger Dataform
     │
-    ▼
-Dataform executes stg_* → int_* → curated_* → mart_* chain
+    └── FAIL ──► Copy file to gs://.../quarantine/{entity}/
+                 Write FAIL record to governance.validation_log
+                   (includes: filename, failed check, expected vs actual values)
+                 Publish alert to Cloud Monitoring / PubSub
+                 Pipeline halted — Dataform NOT triggered
 ```
 
-### 5.5 Data Model — Raw Layer
+#### Validation Log Schema (`governance.validation_log`)
+
+| Column | Type | Description |
+|---|---|---|
+| `validation_id` | STRING | UUID for this validation run |
+| `file_name` | STRING | GCS object name |
+| `entity_type` | STRING | customers / products / orders |
+| `validation_timestamp` | TIMESTAMP | When validation ran |
+| `outcome` | STRING | PASS / FAIL |
+| `failed_check` | STRING | Name of the failing check (null on PASS) |
+| `expected_value` | STRING | What was expected (e.g. column list) |
+| `actual_value` | STRING | What was found in the file |
+| `row_count_sample` | INTEGER | Number of data rows checked |
+| `file_size_bytes` | INTEGER | File size at time of validation |
+
+This table feeds directly into the **CTO Looker Studio dashboard** as a data quality and pipeline health indicator, and is scanned by Dataplex as part of the governance layer.
+
+#### Alerting on Validation Failure
+
+A Cloud Monitoring alert policy fires when `outcome = 'FAIL'` is written to `validation_log`. The alert:
+- Posts to a designated Slack/email channel (configured via Terraform `modules/monitoring`)
+- Includes: file name, entity type, failed check, and expected vs actual values
+- Links directly to the quarantine GCS path for manual inspection
+
+### 5.5 Ingestion Trigger Workflow (Event-Driven, Post-Validation)
+
+```
+New delta file lands in GCS (raw/ landing zone)
+    │
+    ▼
+Eventarc (Object Finalised event on gs://.../raw/**/delta/**)
+    │
+    ▼
+Cloud Run Validator (sa-cloudrun-validator@)
+    │   1. Reads GCS object metadata + header row
+    │   2. Detects entity type from object path
+    │   3. Runs schema contract checks
+    │   4. Writes result to governance.validation_log
+    │
+    ├── FAIL ──► File moved to raw/quarantine/
+    │            Alert fired. Pipeline stops here.
+    │
+    └── PASS ──► File moved to raw/validated/
+                 │
+                 ▼
+             Cloud Run Orchestrator (sa-cloudrun-orchestrator@)
+                 │   Parses entity type
+                 │   Logs to pipeline_runs.ingestion_log
+                 │
+                 ▼
+             Dataform Workflow Execution API
+                 │   Triggers incremental run for detected entity tag
+                 │
+                 ▼
+             Dataform executes stg_* → int_* → curated_* → mart_* chain
+```
+
+### 5.6 Data Model — Raw Layer
 
 The raw layer is **schema-on-read** via external tables. No transformations are applied. Column names and types mirror the source CSV headers exactly.
 
@@ -641,7 +777,8 @@ Looker Studio and the Vertex AI agent operate on mart tables that contain **hash
 
 | Control | Implementation |
 |---|---|
-| **Least Privilege** | 7 dedicated service accounts, each with minimum necessary roles — no shared accounts |
+| **Least Privilege** | 8 dedicated service accounts, each with minimum necessary roles — no shared accounts |
+| **Pre-ingestion Validation** | Schema contract enforced by Cloud Run validator before any file reaches BigQuery — failed files quarantined, pipeline halted |
 | **No human data access** | All interactive access via Looker / Vertex AI Agent only |
 | **VPC Service Controls** | A VPC-SC perimeter restricts BigQuery, GCS, and Vertex AI API access to within the project boundary |
 | **Secret Manager** | All credentials, API keys, and tokens stored in Secret Manager — never in code or env vars |
@@ -723,23 +860,45 @@ Intra-Hackathon — Delta Drop (e.g. new orders file arrives)
  [Step 1]       Eventarc fires "Object Finalised" event
                 → Payload contains: bucket, object name, timestamp
 
- [Step 2]       Cloud Run orchestrator receives event
-                → Parses entity type from object path ("orders")
+ [Step 2]       Cloud Run Validator receives event (sa-cloudrun-validator@)
+                → Detects entity type: "orders" from object path
+                → Reads file header row only (no full scan)
+                → Runs schema contract checks:
+                     ✓ Column names match EXPECTED_SCHEMAS["orders"]
+                     ✓ Column count = 7
+                     ✓ Column order correct
+                     ✓ File non-empty, UTF-8, comma-delimited
+                     ✓ Date format sample passes on order_date column
+
+                IF FAIL:
+                → File moved to gs://.../quarantine/orders/
+                → FAIL record written to governance.validation_log
+                → Cloud Monitoring alert fired
+                → Pipeline halted — Dataform NOT triggered
+
+                IF PASS:
+                → File moved to gs://.../validated/orders/
+                → PASS record written to governance.validation_log
+                → Cloud Run Orchestrator invoked
+
+ [Step 3]       Cloud Run Orchestrator receives trigger (sa-cloudrun-orchestrator@)
+                → Parses entity type from validated file path ("orders")
                 → Writes ingestion log record to pipeline_runs.ingestion_log
                 → Calls Dataform API: trigger incremental execution for orders tag
 
- [Step 3]       Dataform incremental run executes (orders tag only)
+ [Step 4]       Dataform incremental run executes (orders tag only)
                 → stg_orders (incremental) → int_orders_enriched → curated_orders
                 → mart_revenue, mart_customer_retention updated
 
- [Step 4]       Assertions re-run on affected models
+ [Step 5]       Assertions re-run on affected models
                 → Any failures written to governance.quality_failures
 
- [Step 5]       BQML insight generation re-runs for orders domain
+ [Step 6]       BQML insight generation re-runs for orders domain
                 → Updated churn scores, revenue summaries written to marts
 
- [Step 6]       Looker Studio dashboards reflect updated data
+ [Step 7]       Looker Studio dashboards reflect updated data
                 → Near-real-time: end-to-end latency target < 5 minutes
+                   (validation gate adds < 30 seconds to total latency)
 ─────────────────────────────────────────────────────────────────────────────
 ```
 
