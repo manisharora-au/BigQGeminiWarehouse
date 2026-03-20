@@ -44,28 +44,28 @@ The platform is built entirely on **Google Cloud Platform (GCP)** and follows a 
 
 ```mermaid
 graph LR
-    subgraph Data Sources
-        RawCSV[Raw CSV Extracts\nCustomers · Products · Orders]
-        DeltaCSV[Delta CSV Drops\nIncremental Updates]
+    subgraph "Data Sources"
+        RawCSV["Raw CSV Extracts<br/>Customers · Products · Orders"]
+        DeltaCSV["Delta CSV Drops<br/>Incremental Updates"]
     end
 
     subgraph "Layer 0 — Infrastructure (Terraform + Cloud Build)"
-        TF[Terraform Modules]
-        CB[Cloud Build CI/CD]
-        SM[Secret Manager]
+        TF["Terraform Modules"]
+        CB["Cloud Build CI/CD"]
+        SM["Secret Manager"]
         TF -- "Provisions" --> GCS
         TF -- "Provisions" --> BQDatasets
-        TF -- "Provisions" --> SA[Service Accounts & IAM]
+        TF -- "Provisions" --> SA["Service Accounts & IAM"]
     end
 
     subgraph "Layer 1 — Raw (GCS + Validation Gate + BigQuery External Tables)"
-        GCS[(Cloud Storage\ngs://intelia-hackathon-files/)]
-        BQE[BigQuery External Tables\nraw_customers · raw_products · raw_orders]
-        Eventarc((Eventarc\nGCS Trigger))
-        VAL[Cloud Run\nValidation Gate]
-        QUAR[(GCS Quarantine\nraw/quarantine/)]
-        VALID[(GCS Validated\nraw/validated/)]
-        VLOG[BigQuery\nvalidation_log]
+        GCS[("Cloud Storage<br/>gs://intelia-hackathon-files/")]
+        BQE["BigQuery External Tables<br/>raw_customers · raw_products · raw_orders"]
+        Eventarc(("Eventarc<br/>GCS Trigger"))
+        VAL["Cloud Run<br/>Validation Gate"]
+        QUAR[("GCS Quarantine<br/>raw/quarantine/")]
+        VALID[("GCS Validated<br/>raw/validated/")]
+        VLOG["BigQuery<br/>validation_log"]
         RawCSV -- "Initial Load" --> GCS
         DeltaCSV -- "Delta Drop" --> GCS
         GCS -- "Object Finalise Event" --> Eventarc
@@ -77,9 +77,9 @@ graph LR
     end
 
     subgraph "Layer 2 — Curated (BigQuery + Dataform)"
-        CR[Cloud Run\nOrchestrator]
-        DF[Dataform\nSQLX Pipelines]
-        BQC[(BigQuery\nDataset: curated)]
+        CR["Cloud Run<br/>Orchestrator"]
+        DF["Dataform<br/>SQLX Pipelines"]
+        BQC[("BigQuery<br/>Dataset: curated")]
         VAL -- "PASS: trigger pipeline" --> CR
         CR -- "Trigger Workflow Execution" --> DF
         BQE -- "Source" --> DF
@@ -87,15 +87,15 @@ graph LR
     end
 
     subgraph "Layer 3 — Consumption (BigQuery Data Marts + AI)"
-        BQM[(BigQuery\nDataset: marts)]
-        GenAI[Vertex AI Agent\nGemini + BQML]
-        BI[Looker Studio\nDashboards]
+        BQM[("BigQuery<br/>Dataset: marts")]
+        GenAI["Vertex AI Agent<br/>Gemini + BQML"]
+        BI["Looker Studio<br/>Dashboards"]
         BQC -- "mart_* models" --> BQM
         BQM -- "Serve" --> BI
         BQM -- "RAG Context" --> GenAI
     end
 
-    subgraph Personas
+    subgraph "Personas"
         CCO((CCO))
         CTO((CTO))
         BI --> CCO
@@ -105,7 +105,7 @@ graph LR
     end
 
     subgraph "Cross-Cutting — Governance (Dataplex)"
-        DPX[Dataplex\nCatalogue · Lineage · Quality]
+        DPX["Dataplex<br/>Catalogue · Lineage · Quality"]
         BQC -. "Scan" .-> DPX
         BQM -. "Scan" .-> DPX
         DF -. "Lineage Events" .-> DPX
