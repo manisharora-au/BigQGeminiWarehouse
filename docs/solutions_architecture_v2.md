@@ -1,21 +1,23 @@
 # Solutions Architecture
+
 **BigQuery & Gemini Data Warehouse Challenge**
 *intelia Hackathon — v2.1 DRAFT*
 
 ---
 
 ## Table of Contents
+
 1. [Executive Summary](#1-executive-summary)
 2. [Target Personas](#2-target-personas)
 3. [Architecture Overview: Domain-Oriented Layered Design](#3-architecture-overview-domain-oriented-layered-design)
-4. [Infrastructure & Automation](#4-infrastructure--automation)
-5. [Data Ingestion & Raw Layer](#5-data-ingestion--raw-layer)
-6. [Transformation & Curated Layer](#6-transformation--curated-layer)
-7. [Consumption Layer & Data Marts](#7-consumption-layer--data-marts)
+4. [Infrastructure &amp; Automation](#4-infrastructure--automation)
+5. [Data Ingestion &amp; Raw Layer](#5-data-ingestion--raw-layer)
+6. [Transformation &amp; Curated Layer](#6-transformation--curated-layer)
+7. [Consumption Layer &amp; Data Marts](#7-consumption-layer--data-marts)
 8. [Generative AI Integration](#8-generative-ai-integration)
-9. [Data & AI Governance](#9-data--ai-governance)
-10. [Scalability & Security](#10-scalability--security)
-11. [End-to-End Data Flow & Workflow Orchestration](#11-end-to-end-data-flow--workflow-orchestration)
+9. [Data &amp; AI Governance](#9-data--ai-governance)
+10. [Scalability &amp; Security](#10-scalability--security)
+11. [End-to-End Data Flow &amp; Workflow Orchestration](#11-end-to-end-data-flow--workflow-orchestration)
 
 ---
 
@@ -31,9 +33,9 @@ A **pre-ingestion validation gate** (Cloud Run) sits between file arrival and do
 
 ## 2. Target Personas
 
-| Persona | Primary Concerns | Key Deliverables |
-|---|---|---|
-| **Chief Customer Officer (CCO)** | Revenue analysis, customer profiling, retention metrics, churn risk | `mart_revenue`, `mart_customer_retention`, `mart_customer_segments`, conversational analytics agent |
+| Persona                                  | Primary Concerns                                                              | Key Deliverables                                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Chief Customer Officer (CCO)**   | Revenue analysis, customer profiling, retention metrics, churn risk           | `mart_revenue`, `mart_customer_retention`, `mart_customer_segments`, conversational analytics agent  |
 | **Chief Technology Officer (CTO)** | Platform architecture, system adoption, pipeline performance, cost governance | `mart_system_adoption`, pipeline observability dashboard, IaC reproducibility demo, governance scorecard |
 
 ---
@@ -42,88 +44,7 @@ A **pre-ingestion validation gate** (Cloud Run) sits between file arrival and do
 
 The platform is built entirely on **Google Cloud Platform (GCP)** and follows a strict separation of concerns across four functional layers: **Infrastructure**, **Ingestion / Raw**, **Curated**, and **Consumption**. A cross-cutting **Governance & Security** plane spans all layers.
 
-```mermaid
-graph LR
-    subgraph "Data Sources"
-        RawCSV["Raw CSV Extracts<br/>Customers · Products · Orders"]
-        DeltaCSV["Delta CSV Drops<br/>Incremental Updates"]
-    end
-
-    subgraph "Layer 0 — Infrastructure (Terraform + Cloud Build)"
-        TF["Terraform Modules"]
-        CB["Cloud Build CI/CD"]
-        SM["Secret Manager"]
-        TF -- "Provisions" --> GCS
-        TF -- "Provisions" --> BQDatasets
-        TF -- "Provisions" --> SA["Service Accounts & IAM"]
-    end
-
-    subgraph "Layer 1 — Raw (GCS + Validation Gate + BigQuery External Tables)"
-        GCS[("Cloud Storage<br/>gs://intelia-hackathon-files/")]
-        BQE["BigQuery External Tables<br/>raw_customers · raw_products · raw_orders"]
-        Eventarc(("Eventarc<br/>GCS Trigger"))
-        VAL["Cloud Run<br/>Validation Gate"]
-        QUAR[("GCS Quarantine<br/>raw/quarantine/")]
-        VALID[("GCS Validated<br/>raw/validated/")]
-        VLOG["BigQuery<br/>validation_log"]
-        RawCSV -- "Initial Load" --> GCS
-        DeltaCSV -- "Delta Drop" --> GCS
-        GCS -- "Object Finalise Event" --> Eventarc
-        Eventarc -- "HTTP Trigger" --> VAL
-        VAL -- "PASS: move file" --> VALID
-        VAL -- "FAIL: quarantine file" --> QUAR
-        VAL -- "Write result" --> VLOG
-        VALID -. "Federated Query" .-> BQE
-    end
-
-    subgraph "Layer 2 — Curated (BigQuery + Dataform)"
-        CR["Cloud Run<br/>Orchestrator"]
-        DF["Dataform<br/>SQLX Pipelines"]
-        BQC[("BigQuery<br/>Dataset: curated")]
-        VAL -- "PASS: trigger pipeline" --> CR
-        CR -- "Trigger Workflow Execution" --> DF
-        BQE -- "Source" --> DF
-        DF -- "stg_* → int_* → curated_*" --> BQC
-    end
-
-    subgraph "Layer 3 — Consumption (BigQuery Data Marts + AI)"
-        BQM[("BigQuery<br/>Dataset: marts")]
-        GenAI["Vertex AI Agent<br/>Gemini + BQML"]
-        BI["Looker Studio<br/>Dashboards"]
-        BQC -- "mart_* models" --> BQM
-        BQM -- "Serve" --> BI
-        BQM -- "RAG Context" --> GenAI
-    end
-
-    subgraph "Personas"
-        CCO((CCO))
-        CTO((CTO))
-        BI --> CCO
-        BI --> CTO
-        GenAI -- "Conversational Analytics" --> CCO
-        GenAI -- "Platform Insights" --> CTO
-    end
-
-    subgraph "Cross-Cutting — Governance (Dataplex)"
-        DPX["Dataplex<br/>Catalogue · Lineage · Quality"]
-        BQC -. "Scan" .-> DPX
-        BQM -. "Scan" .-> DPX
-        DF -. "Lineage Events" .-> DPX
-    end
-
-    style GCS fill:#b3e5fc,stroke:#0288d1
-    style BQE fill:#bbdefb,stroke:#1976d2
-    style BQC fill:#bbdefb,stroke:#1976d2
-    style BQM fill:#bbdefb,stroke:#1976d2
-    style DF fill:#f8bbd0,stroke:#c2185b
-    style GenAI fill:#e8f5e9,stroke:#388e3c
-    style DPX fill:#fff9c4,stroke:#f9a825
-    style VAL fill:#ffe0b2,stroke:#e65100
-    style QUAR fill:#ffcdd2,stroke:#c62828
-    style VALID fill:#c8e6c9,stroke:#2e7d32
-```
-
----
+![1774167086628](image/solutions_architecture_v2/1774167086628.png)
 
 ## 4. Infrastructure & Automation
 
@@ -135,17 +56,18 @@ The entire GCP environment is provisioned and managed via Terraform, enabling fu
 
 All GCP resources are organised into reusable, composable Terraform modules:
 
-| Module | Resources Managed |
-|---|---|
-| `modules/project` | APIs enabled, billing alerts ($200 cap), project-level labels |
-| `modules/storage` | GCS buckets (raw, validated, quarantine, archive, temp), lifecycle rules, versioning, CMEK |
-| `modules/bigquery` | Datasets (`raw_external`, `curated`, `marts`, `governance`), table schemas including `validation_log` and `ingestion_log`, default encryption |
-| `modules/iam` | Service accounts, IAM bindings (least-privilege roles), Workload Identity |
-| `modules/networking` | VPC Service Controls perimeter, Private Google Access |
-| `modules/dataplex` | Lakes, zones, assets linked to GCS and BigQuery datasets |
-| `modules/monitoring` | Log sinks, alerting policies (including validation failure alerts), budget alerts, dashboard configs |
+| Module                 | Resources Managed                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `modules/project`    | APIs enabled, billing alerts ($200 cap), project-level labels                                          |
+| `modules/storage`    | GCS buckets (raw, archive, temp), lifecycle rules, versioning, CMEK                                    |
+| `modules/bigquery`   | Datasets (`raw_external`, `curated`, `marts`, `governance`), table schemas, default encryption |
+| `modules/iam`        | Service accounts, IAM bindings (least-privilege roles), Workload Identity                              |
+| `modules/networking` | VPC Service Controls perimeter, Private Google Access                                                  |
+| `modules/dataplex`   | Lakes, zones, assets linked to GCS and BigQuery datasets                                               |
+| `modules/monitoring` | Log sinks, alerting policies, budget alerts, dashboard configs                                         |
 
 **Key Terraform patterns:**
+
 - All sensitive values (e.g., service account keys, API tokens) are stored in **Secret Manager** and referenced via `data "google_secret_manager_secret_version"` — never hardcoded in `.tfvars`.
 - Remote state is stored in a dedicated GCS bucket with object versioning and state locking.
 - `terraform plan` output is posted as a comment on every Cloud Build PR trigger before `apply`.
@@ -175,16 +97,15 @@ Trigger: Push to main / manual dispatch
 
 Each functional component runs under a dedicated, least-privilege service account:
 
-| Service Account | Purpose | Key Roles |
-|---|---|---|
-| `sa-terraform@` | IaC provisioning (CI/CD only) | `roles/owner` scoped to project (CI only — not human-accessible) |
-| `sa-gcs-ingest@` | Writing raw files to GCS | `roles/storage.objectCreator` on raw bucket only |
-| `sa-cloudrun-validator@` | Pre-ingestion schema validation | `roles/storage.objectViewer` on raw bucket; `roles/storage.objectCreator` on validated/quarantine prefixes; `roles/bigquery.dataEditor` on `governance.validation_log` |
-| `sa-cloudrun-orchestrator@` | Triggering Dataform executions | `roles/dataform.editor`, `roles/run.invoker` |
-| `sa-dataform@` | Running SQL transformations | `roles/bigquery.dataEditor` on curated/marts datasets; `roles/bigquery.jobUser` |
-| `sa-vertexai@` | Vertex AI agent and BQML calls | `roles/aiplatform.user`, `roles/bigquery.dataViewer` on marts only |
-| `sa-looker@` | BI dashboard read access | `roles/bigquery.dataViewer` on marts datasets only |
-| `sa-dataplex@` | Governance scanning | `roles/dataplex.dataReader`, `roles/datacatalog.admin` |
+| Service Account               | Purpose                        | Key Roles                                                                           |
+| ----------------------------- | ------------------------------ | ----------------------------------------------------------------------------------- |
+| `sa-terraform@`             | IaC provisioning (CI/CD only)  | `roles/owner` scoped to project (CI only — not human-accessible)                 |
+| `sa-gcs-ingest@`            | Writing raw files to GCS       | `roles/storage.objectCreator` on raw bucket only                                  |
+| `sa-cloudrun-orchestrator@` | Triggering Dataform executions | `roles/dataform.editor`, `roles/run.invoker`                                    |
+| `sa-dataform@`              | Running SQL transformations    | `roles/bigquery.dataEditor` on curated/marts datasets; `roles/bigquery.jobUser` |
+| `sa-vertexai@`              | Vertex AI agent and BQML calls | `roles/aiplatform.user`, `roles/bigquery.dataViewer` on marts only              |
+| `sa-looker@`                | BI dashboard read access       | `roles/bigquery.dataViewer` on marts datasets only                                |
+| `sa-dataplex@`              | Governance scanning            | `roles/dataplex.dataReader`, `roles/datacatalog.admin`                          |
 
 > **No human user account is granted direct BigQuery data access in production.** All interactive access is mediated via Looker or the Vertex AI agent.
 
@@ -231,6 +152,7 @@ gs://intelia-hackathon-files/
 > **Landing vs Validated:** Files land in `raw/` first. The validation gate is the only process permitted to move files to `validated/` or `quarantine/`. External tables are built over `validated/` only — quarantined files never reach BigQuery.
 
 **Bucket configuration:**
+
 - **Versioning:** Enabled — all object versions retained for audit trail.
 - **Lifecycle rules:** Objects in `raw/` move to `NEARLINE` after 30 days, `COLDLINE` after 90 days.
 - **Retention policy:** 365-day object retention lock on `raw/` prefix — files cannot be deleted within the window.
@@ -395,11 +317,11 @@ Cloud Run Validator (sa-cloudrun-validator@)
 
 The raw layer is **schema-on-read** via external tables. No transformations are applied. Column names and types mirror the source CSV headers exactly.
 
-| Table | Key Raw Columns (illustrative) |
-|---|---|
-| `ext_customers` | `customer_id`, `first_name`, `last_name`, `email`, `signup_date`, `region`, `loyalty_tier` |
-| `ext_products` | `product_id`, `product_name`, `category`, `unit_price`, `stock_quantity`, `supplier_id` |
-| `ext_orders` | `order_id`, `customer_id`, `product_id`, `order_date`, `quantity`, `total_amount`, `status` |
+| Table             | Key Raw Columns (illustrative)                                                                            |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `ext_customers` | `customer_id`, `first_name`, `last_name`, `email`, `signup_date`, `region`, `loyalty_tier`  |
+| `ext_products`  | `product_id`, `product_name`, `category`, `unit_price`, `stock_quantity`, `supplier_id`       |
+| `ext_orders`    | `order_id`, `customer_id`, `product_id`, `order_date`, `quantity`, `total_amount`, `status` |
 
 ---
 
@@ -458,17 +380,20 @@ dataform/
 The curated layer uses a **normalised, entity-centric model**. Each table represents a single business entity with cleansed and conformed attributes. The design principle is **one version of the truth per entity**.
 
 **Staging models (`stg_*`)** — lightweight, 1:1 with source:
+
 - Cast all columns to correct data types (e.g., `PARSE_DATE`, `SAFE_CAST`)
 - Rename columns to `snake_case` standard
 - Add ingestion metadata: `_loaded_at TIMESTAMP`, `_source_file STRING`
 - Filter out fully null rows
 
 **Intermediate models (`int_*`)** — business logic and enrichment:
+
 - **Deduplication:** `ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY _loaded_at DESC) = 1` to retain the latest record per key — handles delta drops correctly.
 - **Referential joins:** Enrich orders with customer region and product category for downstream use.
 - **Derived fields:** `days_since_signup`, `order_value_band`, `is_repeat_customer`
 
 **Curated models (`curated_*`)** — final conformed entities:
+
 - Materialised as **BigQuery tables** (not views) for performance.
 - Incremental strategy: `MERGE` on surrogate key — new/changed records upserted, historical records preserved with `valid_from` / `valid_to` for Slowly Changing Dimension (SCD Type 2) on key entities like `curated_customers`.
 
@@ -504,23 +429,23 @@ WHEN NOT MATCHED THEN
 
 ### 6.4 Dataform Assertions (Data Quality)
 
-| Assertion | What it checks |
-|---|---|
-| `assert_no_null_customer_ids` | `customer_id IS NOT NULL` across `stg_customers` |
-| `assert_no_null_order_ids` | `order_id IS NOT NULL` across `stg_orders` |
-| `assert_order_amounts_positive` | `total_amount > 0` for all completed orders |
+| Assertion                               | What it checks                                              |
+| --------------------------------------- | ----------------------------------------------------------- |
+| `assert_no_null_customer_ids`         | `customer_id IS NOT NULL` across `stg_customers`        |
+| `assert_no_null_order_ids`            | `order_id IS NOT NULL` across `stg_orders`              |
+| `assert_order_amounts_positive`       | `total_amount > 0` for all completed orders               |
 | `assert_referential_integrity_orders` | Every `customer_id` in orders exists in curated_customers |
-| `assert_product_price_non_negative` | `unit_price >= 0` across all products |
-| `assert_no_duplicate_orders` | No duplicate `order_id` in `curated_orders` |
+| `assert_product_price_non_negative`   | `unit_price >= 0` across all products                     |
+| `assert_no_duplicate_orders`          | No duplicate `order_id` in `curated_orders`             |
 
 Failed assertions surface in the Dataform execution log and also write a failure record to `governance.quality_failures` for Dataplex to pick up.
 
 ### 6.5 Incremental vs Full Refresh Strategy
 
-| Run Type | Trigger | Scope | Use Case |
-|---|---|---|---|
-| **Full Refresh** | Manual / CI/CD deploy | All models re-run from scratch | Initial load, schema changes |
-| **Incremental** | Eventarc delta drop | Only affected entity models | Delta file arrives mid-hackathon |
+| Run Type               | Trigger               | Scope                          | Use Case                         |
+| ---------------------- | --------------------- | ------------------------------ | -------------------------------- |
+| **Full Refresh** | Manual / CI/CD deploy | All models re-run from scratch | Initial load, schema changes     |
+| **Incremental**  | Eventarc delta drop   | Only affected entity models    | Delta file arrives mid-hackathon |
 
 ---
 
@@ -551,53 +476,53 @@ All mart tables follow a **Star Schema** pattern: a central fact table surrounde
 
 **`mart_revenue`**
 
-| Column | Type | Description |
-|---|---|---|
-| `order_date` | DATE | Order transaction date |
-| `region` | STRING | Customer region |
-| `product_category` | STRING | Product category |
-| `total_revenue` | NUMERIC | Sum of order amounts |
-| `order_count` | INTEGER | Number of orders |
-| `avg_order_value` | NUMERIC | Average order value |
-| `revenue_wow_pct` | FLOAT | Week-on-week revenue change % |
+| Column               | Type    | Description                   |
+| -------------------- | ------- | ----------------------------- |
+| `order_date`       | DATE    | Order transaction date        |
+| `region`           | STRING  | Customer region               |
+| `product_category` | STRING  | Product category              |
+| `total_revenue`    | NUMERIC | Sum of order amounts          |
+| `order_count`      | INTEGER | Number of orders              |
+| `avg_order_value`  | NUMERIC | Average order value           |
+| `revenue_wow_pct`  | FLOAT   | Week-on-week revenue change % |
 
 **`mart_customer_retention`**
 
-| Column | Type | Description |
-|---|---|---|
-| `customer_id` | STRING | Customer identifier |
-| `cohort_month` | DATE | Month of first purchase |
-| `months_since_first_order` | INTEGER | Time-based retention bucket |
-| `is_active_30d` | BOOL | Purchased in last 30 days |
-| `is_active_90d` | BOOL | Purchased in last 90 days |
-| `lifetime_value` | NUMERIC | Total spend to date |
-| `churn_risk_score` | FLOAT | BQML-generated churn probability (0–1) |
-| `loyalty_tier` | STRING | Current loyalty tier |
+| Column                       | Type    | Description                             |
+| ---------------------------- | ------- | --------------------------------------- |
+| `customer_id`              | STRING  | Customer identifier                     |
+| `cohort_month`             | DATE    | Month of first purchase                 |
+| `months_since_first_order` | INTEGER | Time-based retention bucket             |
+| `is_active_30d`            | BOOL    | Purchased in last 30 days               |
+| `is_active_90d`            | BOOL    | Purchased in last 90 days               |
+| `lifetime_value`           | NUMERIC | Total spend to date                     |
+| `churn_risk_score`         | FLOAT   | BQML-generated churn probability (0–1) |
+| `loyalty_tier`             | STRING  | Current loyalty tier                    |
 
 **`mart_customer_segments`**
 
-| Column | Type | Description |
-|---|---|---|
-| `customer_id` | STRING | Customer identifier |
-| `rfm_recency_score` | INTEGER | Days since last order (scored 1–5) |
-| `rfm_frequency_score` | INTEGER | Order frequency (scored 1–5) |
-| `rfm_monetary_score` | INTEGER | Total spend quintile (scored 1–5) |
-| `rfm_segment` | STRING | Derived segment: Champions, At Risk, Lost, etc. |
-| `ai_generated_summary` | STRING | BQML `ML.GENERATE_TEXT` customer narrative |
+| Column                   | Type    | Description                                     |
+| ------------------------ | ------- | ----------------------------------------------- |
+| `customer_id`          | STRING  | Customer identifier                             |
+| `rfm_recency_score`    | INTEGER | Days since last order (scored 1–5)             |
+| `rfm_frequency_score`  | INTEGER | Order frequency (scored 1–5)                   |
+| `rfm_monetary_score`   | INTEGER | Total spend quintile (scored 1–5)              |
+| `rfm_segment`          | STRING  | Derived segment: Champions, At Risk, Lost, etc. |
+| `ai_generated_summary` | STRING  | BQML `ML.GENERATE_TEXT` customer narrative    |
 
 ### 7.4 CTO Data Mart — Detail
 
 **`mart_system_adoption`**
 
-| Column | Type | Description |
-|---|---|---|
-| `run_date` | DATE | Pipeline execution date |
-| `pipeline_name` | STRING | Dataform workflow name |
-| `rows_processed` | INTEGER | Records processed in run |
-| `duration_seconds` | FLOAT | End-to-end pipeline duration |
-| `bytes_billed` | INTEGER | BigQuery slot usage for cost tracking |
-| `status` | STRING | SUCCESS / FAILED / PARTIAL |
-| `assertion_failures` | INTEGER | Number of data quality failures |
+| Column                 | Type    | Description                           |
+| ---------------------- | ------- | ------------------------------------- |
+| `run_date`           | DATE    | Pipeline execution date               |
+| `pipeline_name`      | STRING  | Dataform workflow name                |
+| `rows_processed`     | INTEGER | Records processed in run              |
+| `duration_seconds`   | FLOAT   | End-to-end pipeline duration          |
+| `bytes_billed`       | INTEGER | BigQuery slot usage for cost tracking |
+| `status`             | STRING  | SUCCESS / FAILED / PARTIAL            |
+| `assertion_failures` | INTEGER | Number of data quality failures       |
 
 **`mart_pipeline_performance`** — feeds the CTO's observability dashboard, tracking slot efficiency, incremental run cadence, and cost per pipeline execution against the $200 budget.
 
@@ -606,6 +531,7 @@ All mart tables follow a **Star Schema** pattern: a central fact table surrounde
 Two dedicated Looker Studio reports are built, one per persona:
 
 **CCO Report — "Customer & Revenue Intelligence"**
+
 - Revenue trend (daily / weekly / monthly) with region filter
 - Customer retention cohort heatmap
 - RFM segment distribution (pie + trend)
@@ -614,6 +540,7 @@ Two dedicated Looker Studio reports are built, one per persona:
 - AI-generated insight panel (pulling from `ai_generated_summary`)
 
 **CTO Report — "Platform Health & Adoption"**
+
 - Pipeline run history (success/failure rate)
 - Cost consumption vs $200 budget (gauge)
 - Data freshness indicators per entity
@@ -645,6 +572,7 @@ CREATE OR REPLACE MODEL `curated.gemini_pro`
 ```
 
 **Use case 1: Customer narrative generation** (runs as part of `mart_customer_segments` build)
+
 ```sql
 SELECT
   customer_id,
@@ -671,6 +599,7 @@ FROM mart_customer_segments_base
 A **Vertex AI Agent** (using the Agent Builder / Reasoning Engine) is deployed to provide natural language query capability directly over the data marts.
 
 **Agent architecture:**
+
 ```
 User natural language query
     │
@@ -693,6 +622,7 @@ Response: natural language answer + supporting data table + dashboard link
 ```
 
 **Example queries the agent handles:**
+
 - *"Which customer segment has the highest churn risk this month?"*
 - *"What was revenue last week vs the same week last year by region?"*
 - *"Show me the top 5 products driving growth in the Southern region."*
@@ -724,12 +654,12 @@ Dataplex Lake: intelia-retail-lake
 
 **Dataplex capabilities enabled:**
 
-| Capability | Configuration |
-|---|---|
-| **Data Catalogue** | All BQ tables auto-registered; business glossary terms attached to key columns (`customer_id`, `revenue`, `churn_risk_score`) |
-| **Data Lineage** | Automatic lineage captured from BigQuery jobs; Dataform workflow lineage published via API |
-| **Data Quality Scans** | Daily scans on `curated.*` and `marts.*` — null checks, range checks, uniqueness checks |
-| **Policy Tags** | PII columns (`email`, `first_name`, `last_name`) tagged with `policy_tag:pii` — column-level access control enforced |
+| Capability                   | Configuration                                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Data Catalogue**     | All BQ tables auto-registered; business glossary terms attached to key columns (`customer_id`, `revenue`, `churn_risk_score`) |
+| **Data Lineage**       | Automatic lineage captured from BigQuery jobs; Dataform workflow lineage published via API                                          |
+| **Data Quality Scans** | Daily scans on `curated.*` and `marts.*` — null checks, range checks, uniqueness checks                                        |
+| **Policy Tags**        | PII columns (`email`, `first_name`, `last_name`) tagged with `policy_tag:pii` — column-level access control enforced       |
 
 ### 9.2 Data Lineage Map
 
@@ -763,11 +693,11 @@ Looker Studio and the Vertex AI agent operate on mart tables that contain **hash
 
 ### 9.4 Model Governance
 
-| Component | Governance Action |
-|---|---|
-| BQML Churn Model | Evaluated via `ML.EVALUATE` — precision, recall, ROC-AUC logged to `governance.model_evaluations` |
-| Gemini text generation | Prompt templates versioned in Git; output quality monitored via a random sample review job |
-| Vertex AI Agent | Tool call logs written to Cloud Logging; usage metrics tracked in `mart_system_adoption` |
+| Component              | Governance Action                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| BQML Churn Model       | Evaluated via `ML.EVALUATE` — precision, recall, ROC-AUC logged to `governance.model_evaluations` |
+| Gemini text generation | Prompt templates versioned in Git; output quality monitored via a random sample review job             |
+| Vertex AI Agent        | Tool call logs written to Cloud Logging; usage metrics tracked in `mart_system_adoption`             |
 
 ---
 
@@ -775,6 +705,7 @@ Looker Studio and the Vertex AI agent operate on mart tables that contain **hash
 
 ### 10.1 Security Architecture Summary
 
+<<<<<<< HEAD
 | Control | Implementation |
 |---|---|
 | **Least Privilege** | 8 dedicated service accounts, each with minimum necessary roles — no shared accounts |
@@ -785,6 +716,17 @@ Looker Studio and the Vertex AI agent operate on mart tables that contain **hash
 | **Policy Tags (BCLS)** | Column-level PII protection enforced via BigQuery Column-Level Security |
 | **Audit Logging** | Data Access audit logs enabled for BigQuery and GCS — all read/write events captured in Cloud Logging and exported to BigQuery for review |
 | **Object Retention** | GCS raw bucket has a 365-day retention lock — data cannot be deleted within the window |
+=======
+| Control                        | Implementation                                                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Least Privilege**      | 7 dedicated service accounts, each with minimum necessary roles — no shared accounts                                                      |
+| **No human data access** | All interactive access via Looker / Vertex AI Agent only                                                                                   |
+| **VPC Service Controls** | A VPC-SC perimeter restricts BigQuery, GCS, and Vertex AI API access to within the project boundary                                        |
+| **Secret Manager**       | All credentials, API keys, and tokens stored in Secret Manager — never in code or env vars                                                |
+| **Policy Tags (BCLS)**   | Column-level PII protection enforced via BigQuery Column-Level Security                                                                    |
+| **Audit Logging**        | Data Access audit logs enabled for BigQuery and GCS — all read/write events captured in Cloud Logging and exported to BigQuery for review |
+| **Object Retention**     | GCS raw bucket has a 365-day retention lock — data cannot be deleted within the window                                                    |
+>>>>>>> 0ffc2ec (Update solutions architecture documentation and diagrams)
 
 ### 10.2 IAM Hardening Checklist
 
@@ -932,3 +874,5 @@ CCO natural language query: "Which regions are at risk of revenue decline?"
  [Step 5]       Response returned to CCO with result table + Looker Studio link
 ─────────────────────────────────────────────────────────────────────────────
 ```
+
+<style>#mermaid-1774166042674{font-family:sans-serif;font-size:16px;fill:#333;}#mermaid-1774166042674 .error-icon{fill:#552222;}#mermaid-1774166042674 .error-text{fill:#552222;stroke:#552222;}#mermaid-1774166042674 .edge-thickness-normal{stroke-width:2px;}#mermaid-1774166042674 .edge-thickness-thick{stroke-width:3.5px;}#mermaid-1774166042674 .edge-pattern-solid{stroke-dasharray:0;}#mermaid-1774166042674 .edge-pattern-dashed{stroke-dasharray:3;}#mermaid-1774166042674 .edge-pattern-dotted{stroke-dasharray:2;}#mermaid-1774166042674 .marker{fill:#333333;}#mermaid-1774166042674 .marker.cross{stroke:#333333;}#mermaid-1774166042674 svg{font-family:sans-serif;font-size:16px;}#mermaid-1774166042674 .label{font-family:sans-serif;color:#333;}#mermaid-1774166042674 .label text{fill:#333;}#mermaid-1774166042674 .node rect,#mermaid-1774166042674 .node circle,#mermaid-1774166042674 .node ellipse,#mermaid-1774166042674 .node polygon,#mermaid-1774166042674 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#mermaid-1774166042674 .node .label{text-align:center;}#mermaid-1774166042674 .node.clickable{cursor:pointer;}#mermaid-1774166042674 .arrowheadPath{fill:#333333;}#mermaid-1774166042674 .edgePath .path{stroke:#333333;stroke-width:1.5px;}#mermaid-1774166042674 .flowchart-link{stroke:#333333;fill:none;}#mermaid-1774166042674 .edgeLabel{background-color:#e8e8e8;text-align:center;}#mermaid-1774166042674 .edgeLabel rect{opacity:0.5;background-color:#e8e8e8;fill:#e8e8e8;}#mermaid-1774166042674 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#mermaid-1774166042674 .cluster text{fill:#333;}#mermaid-1774166042674 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:sans-serif;font-size:12px;background:hsl(80,100%,96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#mermaid-1774166042674:root{--mermaid-font-family:sans-serif;}#mermaid-1774166042674:root{--mermaid-alt-font-family:sans-serif;}#mermaid-1774166042674 flowchart{fill:apa;}</style>
