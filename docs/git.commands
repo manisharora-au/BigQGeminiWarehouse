@@ -1,0 +1,11 @@
+# 1. Check current status to see modified and untracked files
+git status
+
+# 2. Stage the modified and new files (including those previously untracked)
+git add .gitignore docs/solutions_architecture_v2.md docs/image/ tasks/todo.md
+
+# 3. Commit the staged changes with a descriptive message
+git commit -m "Update docs and images, and update .gitignore to ignore terraform backup files"
+
+# 4. Push the committed changes to the main branch on the remote origin
+git push origin main

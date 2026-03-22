@@ -40,90 +40,244 @@ A **pre-ingestion validation gate** (Cloud Run) sits between file arrival and do
 
 ## 3. Architecture Overview: Domain-Oriented Layered Design
 
-The platform is built entirely on **Google Cloud Platform (GCP)** and follows a strict separation of concerns across four functional layers: **Infrastructure**, **Ingestion / Raw**, **Curated**, and **Consumption**. A cross-cutting **Governance & Security** plane spans all layers.
+The platform is built entirely on **Google Cloud Platform (GCP)** and follows a strict separation of concerns across four layers: **Infrastructure**, **Raw & Validation**, **Curated**, and **Consumption**. A cross-cutting **Governance & Security** plane spans all layers. Each diagram below covers one layer in full detail and can be read independently.
+
+---
+
+### 3.1 Layer 0 — Infrastructure & Automation
+
+Runs first on every deployment. Terraform provisions all GCP resources from scratch; Cloud Build chains the full deployment sequence end-to-end.
 
 ```mermaid
-graph LR
-    subgraph "Data Sources"
-        RawCSV["Raw CSV Extracts<br/>Customers · Products · Orders"]
-        DeltaCSV["Delta CSV Drops<br/>Incremental Updates"]
+graph TB
+    subgraph CB["Cloud Build - CI/CD Pipeline"]
+        S1["Stage 1: terraform apply"] --> S2["Stage 2: Dataform schema push"]
+        S2 --> S3["Stage 3: Seed raw data to GCS"]
+        S3 --> S4["Stage 4: Full pipeline run"]
+        S4 --> S5["Stage 5: Assertions and quality scan"]
     end
 
-    subgraph "Layer 0 — Infrastructure (Terraform + Cloud Build)"
-        TF["Terraform Modules"]
-        CB["Cloud Build CI/CD"]
-        SM["Secret Manager"]
-        TF -- "Provisions" --> GCS
-        TF -- "Provisions" --> BQDatasets
-        TF -- "Provisions" --> SA["Service Accounts & IAM"]
+    subgraph TF["Terraform Modules"]
+        M1["modules/project\nAPIs, billing alerts, labels"]
+        M2["modules/storage\nGCS buckets, lifecycle, CMEK"]
+        M3["modules/bigquery\nDatasets, schemas, encryption"]
+        M4["modules/iam\n8 service accounts, role bindings"]
+        M5["modules/networking\nVPC-SC, Private Google Access"]
+        M6["modules/dataplex\nLake, zones, assets"]
+        M7["modules/monitoring\nBudget alerts, log sinks, dashboards"]
     end
 
-    subgraph "Layer 1 — Raw (GCS + Validation Gate + BigQuery External Tables)"
-        GCS[("Cloud Storage<br/>gs://intelia-hackathon-files/")]
-        BQE["BigQuery External Tables<br/>raw_customers · raw_products · raw_orders"]
-        Eventarc(("Eventarc<br/>GCS Trigger"))
-        VAL["Cloud Run<br/>Validation Gate"]
-        QUAR[("GCS Quarantine<br/>raw/quarantine/")]
-        VALID[("GCS Validated<br/>raw/validated/")]
-        VLOG["BigQuery<br/>validation_log"]
-        RawCSV -- "Initial Load" --> GCS
-        DeltaCSV -- "Delta Drop" --> GCS
-        GCS -- "Object Finalise Event" --> Eventarc
-        Eventarc -- "HTTP Trigger" --> VAL
-        VAL -- "PASS: move file" --> VALID
-        VAL -- "FAIL: quarantine file" --> QUAR
-        VAL -- "Write result" --> VLOG
-        VALID -. "Federated Query" .-> BQE
+    subgraph SM["Secret Manager"]
+        SK["API keys, SA credentials,\nTerraform state bucket creds"]
     end
 
-    subgraph "Layer 2 — Curated (BigQuery + Dataform)"
-        CR["Cloud Run<br/>Orchestrator"]
-        DF["Dataform<br/>SQLX Pipelines"]
-        BQC[("BigQuery<br/>Dataset: curated")]
-        VAL -- "PASS: trigger pipeline" --> CR
-        CR -- "Trigger Workflow Execution" --> DF
-        BQE -- "Source" --> DF
-        DF -- "stg_* → int_* → curated_*" --> BQC
-    end
+    CB --> TF
+    TF --> SM
+    TF --> GCS[("GCS Buckets\nraw, validated, quarantine, archive")]
+    TF --> BQ[("BigQuery Datasets\nraw_external, curated, marts, governance")]
+    TF --> SA["Service Accounts and IAM Bindings"]
+    TF --> MON["Cloud Monitoring\nAlerts and dashboards"]
+    TF --> DPX["Dataplex\nLake, zones, assets"]
 
-    subgraph "Layer 3 — Consumption (BigQuery Data Marts + AI)"
-        BQM[("BigQuery<br/>Dataset: marts")]
-        GenAI["Vertex AI Agent<br/>Gemini + BQML"]
-        BI["Looker Studio<br/>Dashboards"]
-        BQC -- "mart_* models" --> BQM
-        BQM -- "Serve" --> BI
-        BQM -- "RAG Context" --> GenAI
-    end
-
-    subgraph "Personas"
-        CCO((CCO))
-        CTO((CTO))
-        BI --> CCO
-        BI --> CTO
-        GenAI -- "Conversational Analytics" --> CCO
-        GenAI -- "Platform Insights" --> CTO
-    end
-
-    subgraph "Cross-Cutting — Governance (Dataplex)"
-        DPX["Dataplex<br/>Catalogue · Lineage · Quality"]
-        BQC -. "Scan" .-> DPX
-        BQM -. "Scan" .-> DPX
-        DF -. "Lineage Events" .-> DPX
-    end
-
-    style GCS fill:#b3e5fc,stroke:#0288d1
-    style BQE fill:#bbdefb,stroke:#1976d2
-    style BQC fill:#bbdefb,stroke:#1976d2
-    style BQM fill:#bbdefb,stroke:#1976d2
-    style DF fill:#f8bbd0,stroke:#c2185b
-    style GenAI fill:#e8f5e9,stroke:#388e3c
-    style DPX fill:#fff9c4,stroke:#f9a825
-    style VAL fill:#ffe0b2,stroke:#e65100
-    style QUAR fill:#ffcdd2,stroke:#c62828
-    style VALID fill:#c8e6c9,stroke:#2e7d32
+    style CB fill:#f3e5f5,stroke:#7b1fa2
+    style TF fill:#ede7f6,stroke:#512da8
+    style SM fill:#fff3e0,stroke:#e65100
 ```
 
 ---
+
+### 3.2 Layer 1 — Raw Ingestion & Validation Gate
+
+Files land in the GCS raw prefix first. Eventarc fires on every new object, triggering the Cloud Run validation gate. Only files that pass all schema contract checks are promoted to `validated/` and exposed to BigQuery. Failed files are quarantined and the pipeline halts.
+
+```mermaid
+graph TD
+    SRC_F["Full Load CSVs\ncustomers, products, orders"]
+    SRC_D["Delta CSV Drop\ne.g. orders_delta_20250315.csv"]
+
+    subgraph LAND["GCS - Landing Zone - raw/"]
+        FULL["raw/entity/full/\nInitial full extract"]
+        DELTA["raw/entity/delta/\nIncremental drop"]
+    end
+
+    EA(["Eventarc\nObject Finalised event"])
+
+    subgraph VAL["Cloud Run - Validation Gate - sa-cloudrun-validator"]
+        V1["Step 1: Detect entity type from object path"]
+        V2["Step 2: Read header row only - no full file scan"]
+        V3["Step 3: Schema contract checks\nColumn names, count, order,\nencoding, delimiter, date format, file size"]
+        V1 --> V2 --> V3
+    end
+
+    VLOG[("BigQuery\ngovernance.validation_log")]
+    ALERT["Cloud Monitoring Alert\nFailure notification to ops channel"]
+
+    subgraph PASS["GCS - Validated - validated/"]
+        VLD["validated/entity/\nCleared for pipeline processing"]
+    end
+
+    subgraph FAIL["GCS - Quarantine - quarantine/"]
+        QUR["quarantine/entity/\nHeld for manual review"]
+    end
+
+    subgraph EXT["BigQuery - External Tables - raw_external dataset"]
+        EXT_C["ext_customers"]
+        EXT_P["ext_products"]
+        EXT_O["ext_orders"]
+    end
+
+    NEXT["To Layer 2: Cloud Run Orchestrator triggered on PASS"]
+
+    SRC_F --> FULL
+    SRC_D --> DELTA
+    FULL --> EA
+    DELTA --> EA
+    EA -- "HTTP Trigger" --> VAL
+    VAL -- "Write result" --> VLOG
+    VAL -- "PASS: promote file" --> VLD
+    VAL -- "FAIL: quarantine file" --> QUR
+    QUR --> ALERT
+    VLD -.-> EXT_C
+    VLD -.-> EXT_P
+    VLD -.-> EXT_O
+    VAL -- "PASS: invoke orchestrator" --> NEXT
+
+    style LAND fill:#e3f2fd,stroke:#1565c0
+    style PASS fill:#c8e6c9,stroke:#2e7d32
+    style FAIL fill:#ffcdd2,stroke:#c62828
+    style VAL fill:#fff3e0,stroke:#e65100
+    style EXT fill:#bbdefb,stroke:#1976d2
+```
+
+---
+
+### 3.3 Layer 2 — Transformation & Curated Layer
+
+The Cloud Run orchestrator triggers a Dataform workflow execution. Dataform runs the full SQL DAG across three model tiers — staging, intermediate, curated — writing a single trusted version of each entity to BigQuery. Assertions enforce data quality contracts after every run.
+
+```mermaid
+graph TD
+    ORCH["Cloud Run Orchestrator - sa-cloudrun-orchestrator\nInvokes Dataform Workflow API\nFull refresh or incremental tag"]
+
+    subgraph EXT["BigQuery - External Tables - source"]
+        EC["ext_customers"]
+        EP["ext_products"]
+        EO["ext_orders"]
+    end
+
+    subgraph STG["Dataform: Staging - stg_*\nType casting and standardisation"]
+        S1["stg_customers\nCast types, rename columns,\nnull filter, add loaded_at"]
+        S2["stg_products\nCast types, rename columns,\nnull filter, add metadata"]
+        S3["stg_orders\nCast types, rename columns,\nnull filter, add metadata"]
+    end
+
+    subgraph INT["Dataform: Intermediate - int_*\nBusiness logic and enrichment"]
+        I1["int_customers_deduped\nROW_NUMBER dedup by customer_id\nDerive days_since_signup"]
+        I2["int_orders_enriched\nJoin customer region and product category\nDerive order_value_band"]
+        I3["int_product_inventory\nStock level derivations, low stock flag"]
+    end
+
+    subgraph CUR["Dataform: Curated - curated_*\nConformed entity tables"]
+        C1["curated_customers\nSCD Type 2 MERGE\nvalid_from, valid_to, is_current"]
+        C2["curated_products\nIncremental upsert on product_id"]
+        C3["curated_orders\nIncremental upsert on order_id"]
+    end
+
+    subgraph ASR["Dataform: Assertions - data quality contracts"]
+        A1["assert_no_null_customer_ids"]
+        A2["assert_no_null_order_ids"]
+        A3["assert_order_amounts_positive"]
+        A4["assert_referential_integrity_orders"]
+        A5["assert_no_duplicate_orders"]
+    end
+
+    BQC[("BigQuery\nDataset: curated")]
+    QFAIL[("BigQuery\ngovernance.quality_failures")]
+
+    EC --> STG
+    EP --> STG
+    EO --> STG
+    ORCH --> STG
+    STG --> INT
+    INT --> CUR
+    CUR --> ASR
+    CUR --> BQC
+    ASR -- "Failures written" --> QFAIL
+
+    style STG fill:#fce4ec,stroke:#c62828
+    style INT fill:#f3e5f5,stroke:#7b1fa2
+    style CUR fill:#e8eaf6,stroke:#3949ab
+    style ASR fill:#fff9c4,stroke:#f9a825
+    style EXT fill:#bbdefb,stroke:#1976d2
+```
+
+---
+
+### 3.4 Layer 3 — Consumption, GenAI & Personas
+
+The curated dataset feeds persona-specific data marts. BQML enriches mart tables with AI-generated fields during the build. Looker Studio serves dashboards to both personas; the Vertex AI Agent provides conversational analytics via natural language.
+
+```mermaid
+graph LR
+    BQC[("BigQuery\ncurated dataset")]
+
+    subgraph CCO_M["BigQuery Marts - CCO"]
+        M1["mart_revenue\nRevenue, AOV, WoW trend by region"]
+        M2["mart_customer_retention\nCohort analysis, LTV\nchurn_risk_score via BQML"]
+        M3["mart_customer_segments\nRFM scoring, segment labels\nai_generated_summary via BQML"]
+    end
+
+    subgraph CTO_M["BigQuery Marts - CTO"]
+        M4["mart_system_adoption\nPipeline run history, row counts\nbytes_billed, assertion_failures"]
+        M5["mart_pipeline_performance\nSlot efficiency, cost per run\nDelta latency tracking"]
+    end
+
+    subgraph BQML["BigQuery ML"]
+        BM1["Churn Risk Model\nLogistic regression\nFeatures: recency, frequency, monetary"]
+        BM2["Customer Narratives\nML.GENERATE_TEXT via Gemini\nPer-customer summaries"]
+    end
+
+    subgraph AGENT["Vertex AI Agent - sa-vertexai"]
+        AG1["Gemini 1.5 Pro\nSystem prompt with mart schemas"]
+        AG2["Tool: BigQuery SQL executor"]
+        AG3["Tool: Insight summariser"]
+        AG1 --> AG2 --> AG3
+    end
+
+    SCHED["Cloud Scheduler\nNightly insight generation"]
+
+    subgraph BI["Looker Studio"]
+        CCO_D["CCO Dashboard\nRevenue, Retention, RFM, Churn"]
+        CTO_D["CTO Dashboard\nPipeline health, Cost, Quality"]
+    end
+
+    CCO(["Chief Customer Officer"])
+    CTO(["Chief Technology Officer"])
+
+    DPX[("Dataplex\nGovernance, Lineage, Quality scans")]
+
+    BQC --> CCO_M
+    BQC --> CTO_M
+    CCO_M --> BQML
+    BQML --> CCO_M
+    SCHED --> BQML
+    CCO_M --> AGENT
+    CCO_M --> CCO_D
+    CTO_M --> CTO_D
+    CCO_D --> CCO
+    CTO_D --> CTO
+    AGENT --> CCO
+    CTO_M -.-> DPX
+    CCO_M -.-> DPX
+
+    style CCO_M fill:#c8e6c9,stroke:#388e3c
+    style CTO_M fill:#b2dfdb,stroke:#00695c
+    style BQML fill:#e8eaf6,stroke:#3949ab
+    style AGENT fill:#ede7f6,stroke:#512da8
+    style BI fill:#e3f2fd,stroke:#1565c0
+```
+
+
 
 ## 4. Infrastructure & Automation
 
