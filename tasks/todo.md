@@ -6,11 +6,15 @@
 - [x] Fix Mermaid diagram in `docs/solutions_architecture_v2.md`
 - [x] Commit and push fix
 - [x] Push current updates to GitHub (solutions architecture, git commands, and todo list)
+- [x] Publish solutions architecture v3 and update todo.md
+    - [x] Stage `docs/solutions_architecture_v3.md` and `tasks/todo.md`
+    - [x] Commit with message: "Update solutions architecture v3 and todo list"
+    - [x] Push to origin main
+- [x] Pull latest changes from origin
+    - [x] Stash local changes to `tasks/todo.md`
+    - [x] Pull latest changes from origin main
+    - [x] Pop stash and handle any conflicts in `tasks/todo.md`
 - [/] Mount GCS buckets as local folders
     - [/] Install `macFUSE` and `gcsfuse` (Waiting for sudo password)
     - [ ] Create mount points (`/intelia-hackathon-files` and `/intelia-hackathon-dev-raw-data`)
     - [ ] Mount buckets using `gcsfuse`
-- [/] Publish solutions architecture v3 and update todo.md
-    - [/] Stage `docs/solutions_architecture_v3.md` and `tasks/todo.md`
-    - [/] Commit with message: "Update solutions architecture v3 and todo list"
-    - [ ] Push to origin main
