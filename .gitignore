@@ -9,6 +9,9 @@ include/
 lib/
 pyvenv.cfg
 
+# data folder
+data/
+
 # Terraform
 terraform/.terraform/
 terraform/*.tfstate*
