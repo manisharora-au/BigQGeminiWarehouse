@@ -18,10 +18,11 @@
 4. [Infrastructure & Automation](#4-infrastructure--automation)
 5. [Data Ingestion & Raw Layer](#5-data-ingestion--raw-layer)
    - 5.1 Cloud Storage — The Landing Zone
-   - 5.2 Cloud Run Validator — The Validation Gate
-   - 5.3 The Validation Log
-   - 5.4 Alerting on Failure
-   - 5.5 BigQuery External Tables
+   - 5.2 Cloud Functions — The File Router
+   - 5.3 Cloud Run Validator — The Validation Gate
+   - 5.4 The Validation Log
+   - 5.5 Alerting on Failure
+   - 5.6 BigQuery External Tables
 6. [Transformation & Curated Layer](#6-transformation--curated-layer)
    - 6.1 What Dataform Is and Why It Is Used
    - 6.2 The Three Transformation Steps
@@ -59,9 +60,9 @@ This platform organises data into three progressive layers. Each layer has a dis
 
 #### 2.1.1 Layer 1 — Raw: exact replica of the source
 
-The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in Google Cloud Storage (GCS) as CSVs. Before a file is permitted to enter this layer, a validation gate checks that it conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
+The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. A Cloud Function detects the arrival, identifies the entity type and load type from the file name, and moves the file into the correct partitioned subfolder under `raw/`. Eventarc then fires on that structured path and triggers the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
 
-Files that pass validation are made available to BigQuery as **external tables**. An external table is a typed SQL lens over a file that remains in GCS — BigQuery can query it without physically ingesting the data into its own storage. This preserves the raw file as an immutable audit record and avoids storage duplication.
+Files that pass validation are moved to the `validated/` prefix and made available to BigQuery as **external tables**. The external tables point exclusively at the `validated/` prefix — they never read from `raw/`, `inbox/`, or any other area. An external table is a typed SQL lens over a file that stays in GCS — BigQuery can query it without physically copying the data. Only files that have cleared the validation gate are visible to BigQuery and therefore to Dataform. This is the enforcement point: no unvalidated data can enter the transformation layer.
 
 What the data looks like here: four external tables (`ext_customers`, `ext_products`, `ext_orders`, `ext_order_items`) whose columns mirror the CSV headers exactly. If the source sent a null, a duplicate, or a malformed date, it exists here unchanged. The Raw layer is a faithful record of what was received, not what was intended.
 
@@ -166,10 +167,13 @@ The table below gives a single-sentence orientation for every GCP service used i
 | **Infrastructure** | VPC Service Controls | Creates a security boundary around the platform so that data in BigQuery and Cloud Storage cannot be accessed from outside the project, even if credentials were compromised |
 | **Infrastructure** | Private Google Access | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure |
 | **All layers** | Dataplex | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses |
-| **Raw** | Google Cloud Storage | The initial landing zone for all incoming data files, organised into separate areas for newly arrived files, validated files, rejected files, and archived files |
-| **Raw** | Eventarc | Detects when a new file lands in Cloud Storage and immediately triggers the validation check — no manual intervention or polling required |
+| **Raw** | Google Cloud Storage | Stores all platform data across six prefixes: `inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/` |
+| **Raw** | Cloud Functions — File Router | Triggered by a GCS event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, derives today's date, and moves the file into the correct `raw/{entity}/` subfolder — partition structure is applied by the Validator when promoting to `validated/` |
+| **Raw** | Eventarc | Detects when a file is written to the `raw/` prefix by the File Router and immediately triggers the Cloud Run Validator — no manual intervention or polling required |
+| **Raw** | Pub/Sub | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives |
+| **Raw** | Cloud Logging | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline |
 | **Raw** | Cloud Run — Validator | Checks every incoming file against a known set of rules before anything else touches it — correct column names, correct structure, correct encoding; files that pass move forward, files that fail are isolated and an alert is raised (see Section 2.5 for how schema changes are handled) |
-| **Raw** | BigQuery External Tables | Makes validated source files immediately queryable using SQL without copying the data — the file stays in Cloud Storage and BigQuery reads it directly |
+| **Raw** | BigQuery External Tables | Defined over the `validated/` prefix only — gives Dataform SQL access to files that have cleared the validation gate, while files in `raw/`, `inbox/`, and `quarantine/` remain invisible to BigQuery |
 | **Raw** | BigQuery (`governance` dataset) | Records the outcome of every file validation and every data quality check, giving the CTO a full audit trail of what was accepted, what was rejected, and why |
 | **Curated** | Google ADK — Pipeline Coordinator Agent | An AI agent that decides what transformation work needs to run after a file is validated — it checks the current state of the pipeline, identifies what is affected, and handles failures by deciding whether to retry, isolate the problem, or raise an alert |
 | **Curated** | Dataform | Runs the data transformation steps in the correct order — cleaning, enriching, and conforming the raw data into trusted entity tables that the Consumption layer can rely on |
@@ -296,7 +300,7 @@ Dataplex daily quality scans on the `curated.*` and `marts.*` datasets provide a
 
 **The reprocessing path for quarantined files**
 
-Every file moved to `quarantine/` is retained there for the full 365-day GCS retention window. Once the schema contract has been updated and redeployed, the quarantined file can be manually copied back to `raw/{entity}/delta/`, which re-triggers the Eventarc → Validator → Pipeline flow from the beginning. The file is re-validated against the updated contract. If it now passes, it proceeds through the pipeline as normal. The original quarantine record in `governance.validation_log` is preserved — it is never deleted or updated — providing a complete audit trail of the rejection, the resolution, and the reprocessing.
+Every file moved to `quarantine/` is retained there for the full 365-day GCS retention window. Once the schema contract has been updated and redeployed, the quarantined file can be manually copied back to `inbox/` with its original file name, which re-triggers the File Router and the full Eventarc → Validator → Pipeline flow from the beginning. The file is re-validated against the updated contract. If it now passes, it proceeds through the pipeline as normal. The original quarantine record in `governance.validation_log` is preserved — it is never deleted or updated — providing a complete audit trail of the rejection, the resolution, and the reprocessing.
 
 
 ---
@@ -319,7 +323,7 @@ Stage 1 — Terraform reads the infrastructure definitions and provisions every 
 
 Stage 2 — The Dataform transformation logic is deployed to BigQuery. All of the SQL models that clean, enrich, and organise the data are registered and ready to run. Nothing runs yet — this step just makes the models available.
 
-Stage 3 — The initial source CSV files are copied from the shared hackathon bucket into the platform's own Cloud Storage landing zone. This simulates the first data delivery from the source system.
+Stage 3 — The initial source CSV files are copied from the shared hackathon bucket directly into the `inbox/` prefix of the platform bucket. The File Router Cloud Function fires automatically, moves each file into the correct `raw/{entity}/` subfolder, and triggers the validation and pipeline flow from there.
 
 Stage 4 — The full data pipeline (described below) runs end to end for the first time. Every layer is processed in order: the files are validated, the data is cleaned and enriched, the dimensional model is built, and the persona dashboards become live.
 
@@ -335,7 +339,7 @@ This pipeline runs continuously during normal operations. It is event-driven, me
 
 **Delta mode — what happens when a new file arrives:**
 
-A new data file lands in Cloud Storage. Eventarc detects the arrival instantly and triggers the Cloud Run Validator. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
+A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. A Cloud Function detects the arrival, reads the file name to determine the entity type and whether it is a full load or a delta, derives today's date, and moves the file into `raw/{entity}/`. Eventarc detects the arrival and triggers the Cloud Run Validator. If the file passes validation, the Validator promotes it to the correct `validated/{entity}/load_type=delta/date=YYYY-MM-DD/` subfolder — applying the partition structure at that point. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
 
 The Pipeline Coordinator Agent checks what has already run, determines which transformation steps are affected by this particular file, and instructs Dataform to run those steps — and only those steps — in the correct order. Dataform cleans and enriches the data and writes it to the curated tables. Data quality checks run automatically as part of this process. If all checks pass, BigQuery ML runs to refresh the AI-generated columns in the affected mart tables. Dataplex then runs a quality scan across the updated tables. The end-to-end time from file arrival to updated dashboards is under five minutes.
 
@@ -398,32 +402,73 @@ This bucket is provided by intelia and contains the synthetic retail dataset use
 
 **Platform bucket — `gs://intelia-hackathon-dev-raw-data/`**
 
-This is the platform's own bucket, provisioned by Terraform and owned entirely by the platform. All ongoing data operations happen here. It is organised into five areas, each with a specific purpose and specific access controls:
+This is the platform's own bucket, provisioned by Terraform and owned entirely by the platform. All ongoing data operations happen here. It is organised into six areas, each with a specific purpose and specific access controls:
 
 | Path | Purpose |
 |---|---|
-| `gs://intelia-hackathon-dev-raw-data/raw/customers/full/` | Initial full customer extract copied from source bucket |
-| `gs://intelia-hackathon-dev-raw-data/raw/customers/delta/` | Incremental customer updates arriving during the hackathon |
-| `gs://intelia-hackathon-dev-raw-data/raw/products/full/` | Initial full product extract |
-| `gs://intelia-hackathon-dev-raw-data/raw/products/delta/` | Incremental product updates |
-| `gs://intelia-hackathon-dev-raw-data/raw/orders/full/` | Initial full orders extract |
-| `gs://intelia-hackathon-dev-raw-data/raw/orders/delta/` | Incremental order updates |
-| `gs://intelia-hackathon-dev-raw-data/raw/order_items/full/` | Initial full order items extract |
-| `gs://intelia-hackathon-dev-raw-data/raw/order_items/delta/` | Incremental order item updates |
+| `gs://intelia-hackathon-dev-raw-data/inbox/` | Files land here first — the source drops files with no folder convention required |
+| `gs://intelia-hackathon-dev-raw-data/raw/customers/` | Customer files staged here by the File Router — flat, no partition structure |
+| `gs://intelia-hackathon-dev-raw-data/raw/products/` | Product files staged here by the File Router — flat, no partition structure |
+| `gs://intelia-hackathon-dev-raw-data/raw/orders/` | Order files staged here by the File Router — flat, no partition structure |
+| `gs://intelia-hackathon-dev-raw-data/raw/order_items/` | Order item files staged here by the File Router — flat, no partition structure |
+| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/` | Validated full customer extracts — partition structure applied by the Validator on promotion |
+| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=YYYY-MM-DD/` | Validated delta customer files — one dated subfolder per successful drop |
+| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=full/` | Validated full product extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=delta/date=YYYY-MM-DD/` | Validated delta product files |
+| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=full/` | Validated full order extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=delta/date=YYYY-MM-DD/` | Validated delta order files |
+| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=full/` | Validated full order item extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=delta/date=YYYY-MM-DD/` | Validated delta order item files |
 | `gs://intelia-hackathon-dev-raw-data/validated/` | Files that passed all validation checks — cleared for processing |
 | `gs://intelia-hackathon-dev-raw-data/quarantine/` | Files that failed a check — held for manual review |
 | `gs://intelia-hackathon-dev-raw-data/archive/` | Validated files moved here after processing completes |
 | `gs://intelia-hackathon-dev-raw-data/temp/` | Temporary working space for Cloud Run jobs |
 
-The `raw/` prefix is the only area that accepts incoming files. The validator is the only process permitted to move files to `validated/` or `quarantine/`. No other service has write access to those prefixes. This ensures nothing reaches the transformation layer without passing through the validation gate first.
+The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The File Router Cloud Function is the only process permitted to move files from `inbox/` to `raw/`. The validator is the only process permitted to move files from `raw/` to `validated/` or `quarantine/`. No other service has write access to any of those prefixes. This two-step routing ensures that files are both correctly structured and validated before they can reach the transformation layer.
 
 Files in `raw/` are kept for 365 days and cannot be deleted within that window. After 30 days they move to cheaper nearline storage, and after 90 days to coldline storage — preserving the full history without the cost of keeping everything in hot storage indefinitely.
 
 ---
 
-### 5.2 Cloud Run Validator — The Validation Gate
+### 5.2 Cloud Functions — The File Router
 
-The Cloud Run Validator is a lightweight Python service deployed to Cloud Run. It is the first thing that runs when any new file arrives, and it has one job: decide whether the file is safe to process. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
+When a file lands in the `inbox/` prefix, a Cloud Function fires automatically via a GCS trigger. Its job is straightforward: inspect the file name, work out where it belongs in the partitioned folder structure, and move it there. The source system does not need to know anything about the `load_type=` or `date=` folder convention — it just drops a file into `inbox/` and the File Router handles the rest.
+
+**How it determines the entity type**
+
+The File Router reads the file name and matches it against a known set of naming patterns:
+
+| File name pattern | Entity |
+|---|---|
+| `customers_*.csv` | customers |
+| `products_*.csv` | products |
+| `orders_*.csv` | orders |
+| `order_items_*.csv` | order_items |
+
+If the file name does not match any known pattern, the File Router moves it to `quarantine/inbox_unrecognised/` and writes a log entry. The validation pipeline is not triggered.
+
+**How it determines full load vs delta**
+
+The File Router checks whether the file name contains the word `delta`. A file named `customers_delta_20250315.csv` is treated as a delta. A file named `customers_20250101.csv` with no `delta` marker is treated as a full load.
+
+**What it does with the file**
+
+For both full load and delta files, the File Router moves the file to a flat entity subfolder:
+```
+raw/{entity}/filename.csv
+```
+
+The partition structure — `load_type=` and `date=` — is not applied here. The File Router's only job is to identify the entity and stage the file in the right place for the Validator. The Validator applies the partition structure when it promotes the file to `validated/`. The original file in `inbox/` is deleted once the move completes.
+
+**Why Cloud Functions and not Cloud Run**
+
+The File Router is a simple, single-purpose task: read a file name, derive a path, move a file. It takes milliseconds and requires no persistent container or HTTP endpoint. Cloud Functions is the correct tool for this — it starts instantly in response to a GCS event, runs the move, and terminates. Cloud Run would add unnecessary overhead for a task this lightweight.
+
+---
+
+### 5.3 Cloud Run Validator — The Validation Gate
+
+The Cloud Run Validator is a lightweight Python service deployed to Cloud Run. It is triggered by Eventarc when a file appears in the `raw/` prefix — after the File Router has already placed it in the correct partitioned subfolder. It has one job: decide whether the file is safe to process. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
 
 **Why Cloud Run and not Dataflow**
 
@@ -480,19 +525,61 @@ Changing a schema contract requires a deliberate code change, a review, and a re
 
 **How the validator identifies the entity type**
 
-The validator does not rely on the file name to determine whether a file contains customers, products, or orders. It reads the GCS object path. A file at `gs://.../raw/order_items/delta/order_items_delta_20250315.csv` is identified as an order_items file because it lives in the `raw/order_items/` prefix — not because of what it is named. This makes the check robust to file naming inconsistencies.
+The validator does not rely on the file name to determine whether a file contains customers, products, or orders. It reads the GCS object path. A file at `gs://.../raw/order_items/order_items_delta_20250315.csv` is identified as an order_items file because it lives in the `raw/order_items/` prefix — not because of what it is named. This makes the check robust to file naming inconsistencies.
 
 **Outcome routing**
 
-Once all checks have run, the validator takes one of two paths:
+Once all checks have run, the validator takes one of two paths.
 
-If the file passes: it is copied to `gs://.../validated/{entity}/`, a PASS record is written to `governance.validation_log`, and the Pipeline Coordinator Agent is notified to begin the transformation steps.
+**If the file passes:**
 
-If the file fails: it is copied to `gs://.../quarantine/{entity}/`, a FAIL record is written to `governance.validation_log` with the name of the failing check and the exact difference between what was expected and what was found, and a Cloud Monitoring alert is raised. The transformation pipeline is not triggered. The file sits in quarantine until a human reviews it.
+The validator determines whether the file is a full load or a delta from its name, derives today's date, constructs the correct partitioned path, and copies the file to `gs://intelia-hackathon-dev-raw-data/validated/{entity}/load_type={full|delta}/date={YYYY-MM-DD}/`. It then writes a PASS record to `governance.validation_log`. It then notifies the Pipeline Coordinator Agent by publishing a message to a **Pub/Sub topic**.
+
+Pub/Sub is Google's messaging service. The validator publishes a JSON message to a dedicated topic — for example `pipeline-coordinator-trigger` — containing the entity type, the validated file path, and the validation timestamp. The Pipeline Coordinator Agent is subscribed to this topic. The moment the message is published, Pub/Sub delivers it to the agent, which wakes up and begins evaluating what transformation steps to run. This is a push-based, event-driven handoff — the validator does not call the agent directly, and the agent does not poll for new work. The message on the topic is the signal.
+
+The JSON message published looks like this:
+
+```json
+{
+  "entity_type": "orders",
+  "validated_file_path": "gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=delta/date=2025-03-15/orders_delta_20250315.csv",
+  "validation_id": "a3f9c2d1-...",
+  "validation_timestamp": "2025-03-15T09:42:11Z"
+}
+```
+
+The Pipeline Coordinator Agent receives this message, reads the `entity_type`, checks the current pipeline state, and determines what Dataform models to run.
+
+**If the file fails:**
+
+The validator copies the file to `gs://intelia-hackathon-dev-raw-data/quarantine/{entity}/` and writes a FAIL record to `governance.validation_log` containing the name of the failing check and the exact difference between what was expected and what was found. The Pipeline Coordinator Agent is not notified — no Pub/Sub message is published. The transformation pipeline is not triggered.
+
+The validator then writes a structured log entry to **Cloud Logging** — Google's centralised log management service — using the Python `logging` library. The log entry is written at `ERROR` severity and includes the validation ID, entity type, file name, failed check name, expected value, and actual value as structured JSON fields.
+
+Cloud Monitoring watches Cloud Logging continuously via a **log-based alert** — a rule configured by Terraform that says: whenever a log entry with severity `ERROR` appears from the `cloud-run-validator` service, fire an alert. This alert requires no human to be watching a dashboard. It fires the moment the log entry is written.
+
+The alert is delivered via a **notification channel** — also configured by Terraform — which in this platform points to either an email address or a Slack webhook. The notification contains a summary of the log entry: the file name, the entity type, the check that failed, and the exact expected versus actual values. It also includes a direct link to the Cloud Logging entry so the full detail can be inspected, and a direct link to the quarantine path in Cloud Storage so the file can be retrieved.
+
+The full chain is therefore:
+
+```
+Validator writes ERROR log to Cloud Logging
+    │
+    ▼
+Cloud Monitoring log-based alert fires (configured by Terraform — no manual setup)
+    │
+    ▼
+Notification channel delivers alert to email or Slack
+    │
+    ▼
+Team member receives: file name · entity type · failed check · expected vs actual · quarantine link
+```
+
+The alert is self-contained. A team member receiving it has everything needed to understand what went wrong and where the file is, without logging into any system first.
 
 ---
 
-### 5.3 The Validation Log
+### 5.4 The Validation Log
 
 Every file the validator processes — whether it passes or fails — produces a record in the `governance.validation_log` BigQuery table. This table is the authoritative audit trail for everything that has ever been submitted to the platform.
 
@@ -515,22 +602,34 @@ This table feeds into the CTO's Looker Studio dashboard as a live health indicat
 
 ---
 
-### 5.4 Alerting on Failure
+### 5.5 Alerting on Failure
 
-When a file fails validation and a FAIL record is written to `governance.validation_log`, a Cloud Monitoring alert fires automatically. The alert is configured via Terraform and requires no manual setup. It sends a notification to the designated operations channel — email or Slack — containing the file name, the entity type, the check that failed, and the exact expected versus actual values. It also includes a direct link to the quarantine path in Cloud Storage so the file can be inspected immediately.
+The alert itself is described in the outcome routing section above. This section explains what is set up by Terraform to make it work.
 
-The alert is designed to give a team member everything they need to diagnose and resolve the problem without logging into any system first.
+Three things are configured automatically when the platform is deployed — no manual setup in the GCP console is required.
+
+**Step 1 — Watch for failures.** Cloud Monitoring is told to watch the validator service for error messages. Every time the validator rejects a file, it writes an error log. Cloud Monitoring counts these and the moment it sees one, it moves to Step 2.
+
+**Step 2 — Decide to alert.** A rule is in place that says: if even a single error appears from the validator, send an alert immediately. There is no waiting period and no minimum count — the very first failure triggers the notification.
+
+**Step 3 — Deliver the notification.** The notification is sent to a team email address or Slack channel — whichever is configured as a deployment variable. The message contains the file name, the entity type, which check failed, what was expected, what was actually found, and a link to the quarantine area where the file is being held.
+
+The destination address or Slack channel is stored as a variable in the deployment configuration, so changing it — for example, pointing alerts to a different team — requires updating one value and redeploying, not reconfiguring the monitoring setup from scratch.
+
+If the platform is ever torn down and rebuilt on a new GCP project, all three steps are recreated automatically as part of the same deployment run that provisions everything else.
 
 ---
 
-### 5.5 BigQuery External Tables
+### 5.6 BigQuery External Tables
 
-Once a file has passed validation and been moved to the `validated/` area of Cloud Storage, it is made available to BigQuery as an external table. An external table is a SQL view over a file that stays in Cloud Storage — BigQuery can query it using standard SQL without physically copying the data into its own storage. This keeps the raw file in its original location as an immutable record while making it immediately queryable.
+Once a file has passed all validation checks and been moved to the `validated/` prefix, it is made available to BigQuery as an external table. External tables are defined over the `validated/` prefix only — not `raw/`, not `inbox/`. This is the boundary that ensures Dataform can only ever read data that has been explicitly cleared by the validator. A file sitting in `raw/` or `quarantine/` is invisible to BigQuery entirely.
 
-Three external tables are defined — one per entity — each pointing to the relevant `validated/` prefix:
+An external table is a SQL view over files that stay in Cloud Storage — BigQuery can query them using standard SQL without physically copying the data. The files remain in `validated/` as an immutable record of everything that entered the transformation layer.
+
+Four external tables are defined — one per entity — each pointing to the entity's subfolder within `validated/`. All four tables live in the `validated_external` BigQuery dataset:
 
 ```sql
-CREATE OR REPLACE EXTERNAL TABLE `raw_external.ext_customers`
+CREATE OR REPLACE EXTERNAL TABLE `validated_external.ext_customers`
 OPTIONS (
   format = 'CSV',
   uris   = ['gs://intelia-hackathon-dev-raw-data/validated/customers/*.csv'],
@@ -543,7 +642,41 @@ OPTIONS (
 );
 ```
 
-The hive partitioning option on the path prefix allows the Dataform transformation models to query only the files that are relevant to the current run — for a delta load, only the new delta files are read, not the entire history. This keeps the transformation step fast and cost-efficient regardless of how many files have accumulated in the validated area.
+> The `validated/customers/` prefix contains subfolders using two levels of key-value partitioning: `load_type=full/` or `load_type=delta/` at the first level, and `date=YYYY-MM-DD/` at the second level within delta. BigQuery's `AUTO` mode reads these key-value folder names and automatically creates two virtual columns on the external table — `load_type` and `date` — that can be used in SQL `WHERE` clauses for partition pruning. Files must be placed in correctly named key-value subfolders for this to work — plain folder names such as `full/` or `delta/` would not be recognised.
+
+**How hive partitioning works and why it matters**
+
+Without hive partitioning, the `uris` wildcard `*.csv` tells BigQuery to read every CSV file under the `validated/customers/` prefix on every query — the full load file and every delta file that has ever arrived. As more delta files accumulate over the course of the hackathon, every transformation run would scan an ever-growing set of files regardless of whether they contain new data. This is wasteful and increasingly slow.
+
+Hive partitioning solves this by turning folder names into queryable columns. The key requirement is that subfolders must be named as key-value pairs in the format `key=value`. This platform uses two levels of key-value partitioning under each entity prefix. The first level is `load_type=full` or `load_type=delta`. Delta files additionally carry a second level of `date=YYYY-MM-DD` identifying when the file arrived:
+
+```
+gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/customers_20250101.csv
+gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=2025-03-15/customers_delta_20250315.csv
+gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=2025-03-18/customers_delta_20250318.csv
+```
+
+When `mode = 'AUTO'` is set and `source_uri_prefix` points to `validated/customers/`, BigQuery reads all folder name segments beyond that prefix, recognises each `key=value` pair, and automatically creates a virtual column for each one — `load_type` and `date` in this case. Neither column is stored in any file — BigQuery derives both from the path of each row's source file. Both can be used in a SQL `WHERE` clause exactly like any regular column.
+
+A Dataform staging model running as part of a delta load filters to exactly the file that just arrived using both partition columns:
+
+```sql
+SELECT *
+FROM ${ref('ext_customers')}
+WHERE load_type = 'delta'
+  AND date = '2025-03-15'
+```
+
+A full refresh run reads everything with no filter:
+
+```sql
+SELECT *
+FROM ${ref('ext_customers')}
+```
+
+Critically, BigQuery uses both partition columns to perform **partition pruning** at the storage read level. When `WHERE load_type = 'delta' AND date = '2025-03-15'` is applied, BigQuery navigates directly to the `load_type=delta/date=2025-03-15/` subfolder and reads only the file inside it. The `load_type=full/` folder is skipped entirely, as are every other `date=` subfolder under `load_type=delta/`. None of those files are opened. The exclusion happens before any data is transferred — BigQuery does not scan and then discard, it never touches files outside the matching path.
+
+In practical terms: on Day 1 the full load file is read. On Day 5 when the first delta arrives, only the `date=2025-03-05/` subfolder is read — not the full load file. On Day 10 when another delta arrives, only the `date=2025-03-10/` subfolder is read — not the full load and not the Day 5 delta. Each incremental run reads exactly one file regardless of how many files have accumulated. The cost and speed of every delta run stays constant over the entire life of the platform.
 
 The same pattern is used for `ext_products`, `ext_orders`, and `ext_order_items`. These four external tables are the source that all Dataform staging models read from.
 
