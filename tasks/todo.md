@@ -14,9 +14,9 @@
     - [x] Stash local changes to `tasks/todo.md`
     - [x] Pull latest changes from origin main
     - [x] Pop stash and handle any conflicts in `tasks/todo.md`
-- [/] Publish local changes to GitHub
-    - [ ] Stage and commit `docs/solutions_architecture_v3.md`
-    - [ ] Push all local commits to origin main
+- [x] Publish local changes to GitHub
+    - [x] Stage and commit `docs/solutions_architecture_v3.md`
+    - [x] Push all local commits to origin main
 - [/] Mount GCS buckets as local folders
     - [/] Install `macFUSE` and `gcsfuse` (Waiting for sudo password)
     - [ ] Create mount points (`/intelia-hackathon-files` and `/intelia-hackathon-dev-raw-data`)
