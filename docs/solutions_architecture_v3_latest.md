@@ -60,7 +60,7 @@ This platform organises data into three progressive layers. Each layer has a dis
 
 #### 2.1.1 Layer 1 — Raw: exact replica of the source
 
-The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. A Cloud Function detects the arrival, identifies the entity type and load type from the file name, and moves the file into the correct partitioned subfolder under `raw/`. Eventarc then fires on that structured path and triggers the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
+The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. That file landing fires a GCS Object Finalised event, which triggers the File Router Cloud Function automatically. The File Router identifies the entity type from the file name and moves the file to `raw/{entity}/`. That write to `raw/` fires a second Object Finalised event, which Eventarc picks up and uses to trigger the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
 
 Files that pass validation are moved to the `validated/` prefix and made available to BigQuery as **external tables**. The external tables point exclusively at the `validated/` prefix — they never read from `raw/`, `inbox/`, or any other area. An external table is a typed SQL lens over a file that stays in GCS — BigQuery can query it without physically copying the data. Only files that have cleared the validation gate are visible to BigQuery and therefore to Dataform. This is the enforcement point: no unvalidated data can enter the transformation layer.
 
@@ -70,21 +70,17 @@ What the data looks like here: four external tables (`ext_customers`, `ext_produ
 
 #### 2.1.2 Layer 2 — Curated: cleaned, conformed, and trustworthy
 
-The Curated layer is not a dimensional model. It is not a star schema. It contains one table per business entity — customers, products, orders, and order_items — each representing a single, trusted, deduplicated version of that entity with a meaningful and consistent schema.
+The Curated layer is not a dimensional model. It is not a star schema. It contains one table per business entity — customers, products, orders, and order_items — each representing a structurally clean, consistently typed record of exactly what arrived from the source. No business logic is applied here. No joins, no derived fields, no analytical interpretation. That work belongs in the Consumption layer where it can be changed without touching this layer.
 
-Transformation from Raw to Curated happens in three sequential steps:
+Transformation from Raw to Curated happens in two sequential steps:
 
-*Staging* casts every column to the correct data type, renames columns to a consistent `snake_case` standard, filters fully null rows, and attaches ingestion metadata (`_loaded_at`, `_source_file`). This is structural cleanup — the data is not yet interpreted, just made consistent and typed.
+*Curated* models read directly from the external tables and materialise the final conformed entity tables in BigQuery native storage using an **append-only** approach. Each model casts every column to the correct data type, renames columns to a consistent `snake_case` standard, filters fully null rows, and attaches ingestion metadata (`_loaded_at`, `_source_file`) — all in a single step before appending to the curated table. Every record that arrives — whether from a full load or a delta drop — is written as a new row stamped with `_loaded_at` and `_source_file`. No existing record is ever updated or deleted. The curated tables hold a complete, immutable history of every version of every entity exactly as it arrived.
 
-*Intermediate* applies business logic: referential enrichment (joining customer region onto orders, product category onto order lines) and derivation of calculated fields such as `days_since_signup` and `is_repeat_customer`. This is where raw data becomes meaningful.
+Downstream models in the Consumption layer resolve the current state of an entity at query time using `ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY _loaded_at DESC) = 1` — selecting the most recently arrived record per entity before applying any business logic or joining to other entities. This keeps the Curated layer simple, stable, and safe to reprocess: because nothing is mutated, any pipeline run can be replayed from scratch without risk.
 
-*Curated* materialises the final conformed entity tables in BigQuery native storage using an **append-only** approach. Every record that arrives — whether from a full load or a delta drop — is written as a new row stamped with `_loaded_at` and `_source_file`. No existing record is ever updated or deleted during the pipeline run. This means the curated tables hold a complete, immutable history of every version of every entity as it arrived over time.
+Older records are culled on a defined schedule — delta records beyond a 90-day retention window are removed by a scheduled Dataform maintenance model. Full load records are retained for the lifetime of the project as the baseline.
 
-Downstream models in the Consumption layer always derive the current state of an entity at query time using a simple `ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY _loaded_at DESC) = 1` pattern — selecting the most recently arrived record per entity. This keeps the curated layer simple and safe to reprocess: because nothing is mutated, any pipeline run can be replayed from scratch without risk of data corruption.
-
-Older records are culled on a defined schedule — delta records beyond a 90-day retention window are removed by a scheduled Dataform maintenance model. Full load records are retained for the lifetime of the project as the baseline. This balances auditability with cost efficiency.
-
-What the data looks like here: four append-only entity tables — `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items` — each containing all historical arrivals for that entity, stamped with ingestion metadata. Clean types, consistent naming, no nulls on key fields. This is the single source of truth that all downstream consumption is built from.
+What the data looks like here: four append-only entity tables — `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items` — each containing all historical arrivals stamped with ingestion metadata. Clean types, consistent naming, no nulls on key fields. No joins, no derived columns, no business rules applied. This is the single source of truth from which the Consumption layer builds everything.
 
 ---
 
@@ -104,13 +100,13 @@ A **star schema** is the correct choice here. It gives every fact record a perma
 
 Four tables form the foundation of the star schema, all built from the curated entity tables:
 
-`dim_customer` is built from `curated_customers` and implements **SCD Type 2** — the correct home for this pattern. When a customer's `loyalty_tier` or `region` changes, the previous dimension record is closed (`valid_to` stamped, `is_current = FALSE`) and a new record is inserted with a new surrogate key. Every order in `fact_orders` joins to the surrogate key that was current at the time of that transaction, not the customer's current state. Without this, a customer who moved from Bronze to Gold loyalty would retroactively appear as Gold on all their historical orders — corrupting every cohort and retention analysis the CCO depends on.
+`dim_customer` is built from `curated_customers` and is where business logic is applied to the customer entity for the first time. The current state of each customer is resolved using `ROW_NUMBER()` over `_loaded_at`. Derived fields — `days_since_signup`, `customer_age_band`, loyalty tier categorisation — are calculated here. SCD Type 2 is implemented at this point: when a customer's `loyalty_tier` or `region` changes, the previous dimension record is closed (`valid_to` stamped, `is_current = FALSE`) and a new record is inserted with a new surrogate key. Every order in `fact_orders` joins to the surrogate key that was current at the time of that transaction, not the customer's current state. Without this, a customer who moved from Bronze to Gold loyalty would retroactively appear as Gold on all their historical orders — corrupting every cohort and retention analysis the CCO depends on.
 
-`dim_product` is built from `curated_products` and implements SCD Type 2 on `category` and `unit_price` — preserving the product state at the time each order was placed.
+`dim_product` is built from `curated_products`. Derived fields — `is_low_stock`, stock level bands — are calculated here. SCD Type 2 is applied on `category` and `unit_price`, preserving the product state at the time each order was placed.
 
 `dim_date` is a static date spine covering the full range of order dates. No SCD is needed — dates do not change.
 
-`fact_orders` is the central fact table, one row per order item line. It is built from `order_items` joined to `orders`, `dim_customer`, `dim_product`, and `dim_date` using surrogate keys — not natural keys — ensuring every historical query resolves to the correct version of each dimension at the time of the transaction.
+`fact_orders` is the central fact table, one row per order item line. This is where referential enrichment happens: `curated_order_items` is joined to `curated_orders` to bring in order-level context, then joined to `dim_customer`, `dim_product`, and `dim_date` using surrogate keys — not natural keys. Derived measures such as `line_revenue` and `order_value_band` are calculated here. Every row resolves to the correct version of each dimension at the time of the transaction. No enrichment or derivation of this kind exists anywhere in the Curated layer — it all happens at this step, in the one place designed for business interpretation.
 
 **Persona-specific marts**
 
@@ -168,8 +164,8 @@ The table below gives a single-sentence orientation for every GCP service used i
 | **Infrastructure** | Private Google Access | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure |
 | **All layers** | Dataplex | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses |
 | **Raw** | Google Cloud Storage | Stores all platform data across six prefixes: `inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/` |
-| **Raw** | Cloud Functions — File Router | Triggered by a GCS event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, derives today's date, and moves the file into the correct `raw/{entity}/` subfolder — partition structure is applied by the Validator when promoting to `validated/` |
-| **Raw** | Eventarc | Detects when a file is written to the `raw/` prefix by the File Router and immediately triggers the Cloud Run Validator — no manual intervention or polling required |
+| **Raw** | Cloud Functions — File Router | Triggered by a GCS Object Finalised event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, and moves the file into the correct `raw/{entity}/` subfolder; writing to `raw/` itself fires a second Object Finalised event that triggers the Validator |
+| **Raw** | Eventarc | Watches two GCS prefixes for Object Finalised events — fires on `inbox/` to trigger the File Router, and fires on `raw/` to trigger the Cloud Run Validator; both transitions are fully automatic with no polling or manual intervention |
 | **Raw** | Pub/Sub | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives |
 | **Raw** | Cloud Logging | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline |
 | **Raw** | Cloud Run — Validator | Checks every incoming file against a known set of rules before anything else touches it — correct column names, correct structure, correct encoding; files that pass move forward, files that fail are isolated and an alert is raised (see Section 2.5 for how schema changes are handled) |
@@ -231,7 +227,7 @@ Schema validation is deterministic — a file either matches its contract or it 
 
 **Why validation must remain deterministic despite schema change**
 
-An agent cannot be responsible for deciding whether a new or unexpected schema is acceptable. That decision has downstream consequences — a new column in the source file may need to propagate through the Dataform `stg_*` model, the `curated_*` table, and potentially a mart column and a dashboard panel. Accepting it silently at the gate would allow the change to enter the pipeline without any of those downstream components being updated. The validator's job is to enforce the current contract, not to interpret intent. Schema evolution is a human-governed change process, not an automated one.
+An agent cannot be responsible for deciding whether a new or unexpected schema is acceptable. That decision has downstream consequences — a new column in the source file may need to propagate through the `curated_*` Dataform model, and potentially a mart column and a dashboard panel. Accepting it silently at the gate would allow the change to enter the pipeline without any of those downstream components being updated. The validator's job is to enforce the current contract, not to interpret intent. Schema evolution is a human-governed change process, not an automated one.
 
 **Schema contracts — where they live**
 
@@ -267,7 +263,7 @@ The source file arrives with a column not present in `EXPECTED_SCHEMAS`. The val
 Resolution process:
 1. The team reviews the quarantine alert and determines whether the new column is intentional and valuable downstream
 2. `EXPECTED_SCHEMAS` is updated in Git to include the new column
-3. The corresponding `stg_*` Dataform model is updated to cast and rename the new column
+3. The corresponding `curated_*` Dataform model is updated to cast and rename the new column
 4. If the column is needed in a mart or dashboard, the relevant `curated_*` model, mart model, and Looker Studio report are updated in the same Git branch
 5. Cloud Build redeploys the validator and Dataform models
 6. The quarantined file is manually reprocessed against the updated contract
@@ -278,7 +274,7 @@ This is a deliberate, end-to-end change — not a one-line fix. Adding a column 
 
 A column the contract expects is missing, or has been renamed. The validator rejects the file with `failed_check = "missing_column"` or `"column_name_mismatch"`, and the FAIL record in `governance.validation_log` contains the precise diff: expected column list versus actual column list received.
 
-This is higher urgency than an additive change because a renamed or removed column will break existing Dataform models if it reaches them. The pipeline halt is protective. Resolution follows the same process as Scenario 1, but the Dataform model updates are mandatory rather than optional — the `stg_*` model references the old column name and will fail on execution if the contract is updated without a corresponding model change.
+This is higher urgency than an additive change because a renamed or removed column will break existing Dataform models if it reaches them. The pipeline halt is protective. Resolution follows the same process as Scenario 1, but the Dataform model updates are mandatory rather than optional — the `curated_*` model references the old column name and will fail on execution if the contract is updated without a corresponding model change.
 
 The `governance.validation_log` record provides the team with a precise diff to work from rather than a generic failure message:
 
@@ -339,7 +335,7 @@ This pipeline runs continuously during normal operations. It is event-driven, me
 
 **Delta mode — what happens when a new file arrives:**
 
-A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. A Cloud Function detects the arrival, reads the file name to determine the entity type and whether it is a full load or a delta, derives today's date, and moves the file into `raw/{entity}/`. Eventarc detects the arrival and triggers the Cloud Run Validator. If the file passes validation, the Validator promotes it to the correct `validated/{entity}/load_type=delta/date=YYYY-MM-DD/` subfolder — applying the partition structure at that point. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
+A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. This landing fires a GCS Object Finalised event, which triggers the File Router Cloud Function. The File Router moves the file to `raw/{entity}/`. That write fires a second Object Finalised event, which Eventarc picks up and uses to trigger the Cloud Run Validator. If the file passes validation, the Validator promotes it to the correct `validated/{entity}/load_type=delta/date=YYYY-MM-DD/` subfolder — applying the partition structure at that point. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
 
 The Pipeline Coordinator Agent checks what has already run, determines which transformation steps are affected by this particular file, and instructs Dataform to run those steps — and only those steps — in the correct order. Dataform cleans and enriches the data and writes it to the curated tables. Data quality checks run automatically as part of this process. If all checks pass, BigQuery ML runs to refresh the AI-generated columns in the affected mart tables. Dataplex then runs a quality scan across the updated tables. The end-to-end time from file arrival to updated dashboards is under five minutes.
 
@@ -432,7 +428,7 @@ Files in `raw/` are kept for 365 days and cannot be deleted within that window. 
 
 ### 5.2 Cloud Functions — The File Router
 
-When a file lands in the `inbox/` prefix, a Cloud Function fires automatically via a GCS trigger. Its job is straightforward: inspect the file name, work out where it belongs in the partitioned folder structure, and move it there. The source system does not need to know anything about the `load_type=` or `date=` folder convention — it just drops a file into `inbox/` and the File Router handles the rest.
+When a file lands in the `inbox/` prefix, GCS fires an **Object Finalised event** automatically. This event triggers the File Router Cloud Function — the same event mechanism used throughout this platform whenever a file write needs to kick off the next step in the chain. The File Router's job is straightforward: inspect the file name, work out which entity it belongs to, and move it to the correct `raw/{entity}/` subfolder. When the File Router writes the file to `raw/`, that write fires another Object Finalised event — this time on the `raw/` prefix — which Eventarc picks up and uses to trigger the Cloud Run Validator. The source system does not need to know anything about any of this. It just drops a file into `inbox/` and the event chain takes over.
 
 **How it determines the entity type**
 
@@ -658,7 +654,7 @@ gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=202
 
 When `mode = 'AUTO'` is set and `source_uri_prefix` points to `validated/customers/`, BigQuery reads all folder name segments beyond that prefix, recognises each `key=value` pair, and automatically creates a virtual column for each one — `load_type` and `date` in this case. Neither column is stored in any file — BigQuery derives both from the path of each row's source file. Both can be used in a SQL `WHERE` clause exactly like any regular column.
 
-A Dataform staging model running as part of a delta load filters to exactly the file that just arrived using both partition columns:
+A Dataform curated model running as part of a delta load filters to exactly the file that just arrived using both partition columns:
 
 ```sql
 SELECT *
@@ -678,7 +674,7 @@ Critically, BigQuery uses both partition columns to perform **partition pruning*
 
 In practical terms: on Day 1 the full load file is read. On Day 5 when the first delta arrives, only the `date=2025-03-05/` subfolder is read — not the full load file. On Day 10 when another delta arrives, only the `date=2025-03-10/` subfolder is read — not the full load and not the Day 5 delta. Each incremental run reads exactly one file regardless of how many files have accumulated. The cost and speed of every delta run stays constant over the entire life of the platform.
 
-The same pattern is used for `ext_products`, `ext_orders`, and `ext_order_items`. These four external tables are the source that all Dataform staging models read from.
+The same pattern is used for `ext_products`, `ext_orders`, and `ext_order_items`. These four external tables are the source that all Dataform curated models read from directly.
 
 **What the data looks like at this point**
 
@@ -707,50 +703,39 @@ The alternative would be writing raw SQL scripts and scheduling them manually, o
 
 ---
 
-### 6.2 The Three Transformation Steps
+### 6.2 The Transformation Step
 
-Every entity — customers, products, orders, and order_items — passes through three model tiers in sequence. Each tier has a single, well-defined responsibility.
+Every entity — customers, products, orders, and order_items — is processed in a single Dataform model that reads directly from the external table and writes to the curated table in one step. There is no separate staging layer.
 
-**Step 1 — Staging models (`stg_*`)**
+The decision to collapse to a single step is deliberate. The Cloud Run Validator has already enforced the structural contract before any file reaches BigQuery — column names, count, order, encoding, and delimiter are all guaranteed correct. A separate staging model would be largely re-checking what the validator already confirmed. In this architecture, a single curated model per entity is the cleaner and simpler design.
 
-The staging models are a direct, lightweight translation of the external table source. They do not apply business logic. Their only job is to make the data consistent and correctly typed so that everything downstream can rely on column names and data types without defensive casting.
+**Curated models (`curated_*`)**
 
-Every staging model does the following:
+Each curated model reads directly from the corresponding external table and does the following in a single pass before appending:
 
-- Casts every column to the correct data type — dates are parsed from strings, numeric columns are cast from string, boolean flags are derived
+- Casts every column to the correct data type — dates parsed from strings, numeric columns cast from string
 - Renames columns to a consistent `snake_case` naming standard
-- Filters out any row where every column is null — these are structurally empty rows that add no value
-- Adds two metadata columns: `_loaded_at` (the timestamp when this record was processed) and `_source_file` (the GCS path of the file it came from)
+- Filters out any row where every column is null — structurally empty rows that add no value
+- Attaches two metadata columns: `_loaded_at` (timestamp when this record was processed) and `_source_file` (the full GCS path of the source file)
+- Appends the result to the curated table as a new row — no existing rows are updated or deleted
 
-At the end of this step the data is clean in structure and type, but has not been interpreted in any way. A null value in a business field is still a null — it has not been defaulted or filled.
+The curated table receives one new row per source record per pipeline run. The full arrival history of every entity accumulates over time. Older delta records beyond the 90-day retention window are removed by a scheduled Dataform maintenance model. Full load records are retained for the lifetime of the project.
 
-**Step 2 — Intermediate models (`int_*`)**
+The four curated tables produced are `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items`. Each is a clean, typed, append-only record of exactly what arrived — no joins, no derived columns, no business rules. All of that happens in Section 7 when the Consumption layer builds the dimensional model from these tables.
 
-The intermediate models apply business logic. They take the typed, consistently named staging output and enrich it with derived fields and referential context that make the data meaningful rather than merely clean.
+The Dataform project structure for the Curated layer is therefore:
 
-For customers: `days_since_signup` is derived from `signup_date`, and a `customer_age_band` is calculated for segmentation.
-
-For orders: the customer's `region` and `loyalty_tier` are joined in from the customers staging model, and `order_value_band` is derived to group orders into size categories.
-
-For order_items: the product's `category` and `unit_price` at the time of the order are joined in from the products staging model, giving every line item full context about what was purchased.
-
-For products: stock level flags such as `is_low_stock` are derived from `stock_quantity` thresholds.
-
-Nothing is deleted or deduplicated at this step. The append-only principle established in the Raw layer carries through — every record that arrived is still present. The intermediate models only add context, they do not remove records.
-
-**Step 3 — Curated models (`curated_*`)**
-
-The curated models write the final entity tables to the `curated` BigQuery dataset as native BigQuery tables — not views. Writing as tables means the data is physically stored in BigQuery and can be queried at full speed without re-executing the transformation logic each time.
-
-Each curated model appends the output of the intermediate model to the corresponding curated table, stamping every row with `_loaded_at` and `_source_file`. No existing rows are updated or deleted. The full arrival history of every entity is preserved, and older delta records beyond the 90-day retention window are removed by a scheduled maintenance model.
-
-The four curated tables produced are `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items`.
+```
+definitions/
+├── sources/        ← declares external table references (validated_external.ext_*)
+└── curated/        ← one curated_*.sqlx model per entity, reading directly from sources
+```
 
 ---
 
 ### 6.3 Dataform Assertions — Data Quality Checks
 
-Assertions are the second line of data quality defence, running after the Cloud Run Validator has confirmed the file structure and after the staging models have loaded the data into BigQuery. Where the Cloud Run Validator checks whether a file is the right shape to enter the platform, Dataform assertions check whether the data inside the file is semantically correct.
+Assertions are the second line of data quality defence, running after the Cloud Run Validator has confirmed the file structure and after the curated models have loaded the data into BigQuery. Where the Cloud Run Validator checks whether a file is the right shape to enter the platform, Dataform assertions check whether the data inside the file is semantically correct.
 
 **How assertions work**
 

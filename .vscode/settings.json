@@ -1,0 +1,12 @@
+{
+    "vscode-bigquery.projects": [
+        "intelia-hackathon-dev",
+        "manish-sandpit"
+    ],
+    "vscode-bigquery.pinned-projects": [
+        "manish-sandpit",
+        "vishal-sandpit-474523"
+    ],
+    "vscode-bigquery.default-project": "manish-sandpit",
+    "vscode-bigquery.dataset-cache-ttl": 0
+}

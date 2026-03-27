@@ -1,0 +1,29 @@
+# ==============================================================================
+# Terraform Variables Example Configuration
+# Description: Template for terraform.tfvars - copy and customize for your environment
+# ==============================================================================
+
+# Core project configuration (REQUIRED)
+project_id           = "your-gcp-project-id"
+region              = "us-central1"
+environment         = "dev"
+project_name        = "hackathon"
+organization_prefix = "yourorg"
+
+# Optional configuration
+labels = {
+  owner       = "your-team"
+  cost_center = "engineering"
+  application = "data-warehouse"
+}
+
+force_destroy_buckets      = true   # Set to false in production
+enable_vpc_service_controls = false # Requires organization-level permissions
+notification_email         = "your-email@example.com"
+
+# ==============================================================================
+# Usage Instructions:
+# 1. Copy this file to terraform.tfvars
+# 2. Update the values above with your actual configuration
+# 3. The terraform.tfvars file is ignored by git for security
+# ==============================================================================

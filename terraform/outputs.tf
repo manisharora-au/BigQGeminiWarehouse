@@ -1,79 +1,102 @@
-# ------------------------------------------------------------------------------
-# Output values for use by other systems
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# Terraform Outputs - BigQuery Gemini Data Warehouse
+# Description: Output values from all infrastructure modules
+# ==============================================================================
 
+# Project outputs
 output "project_id" {
   description = "The GCP Project ID"
   value       = var.project_id
 }
 
-output "region" {
-  description = "The GCP region where resources are deployed"
-  value       = var.region
+output "enabled_apis" {
+  description = "List of enabled GCP APIs"
+  value       = module.project.enabled_apis
 }
 
-output "raw_bucket_name" {
-  description = "Name of the GCS bucket for raw data"
-  value       = google_storage_bucket.raw_data.name
+# Storage outputs
+output "raw_data_bucket" {
+  description = "Name of the primary data bucket"
+  value       = module.storage.raw_data_bucket_name
 }
 
-output "raw_bucket_url" {
-  description = "GCS URL of the raw data bucket"
-  value       = google_storage_bucket.raw_data.url
+output "functions_source_bucket" {
+  description = "Name of the Cloud Functions source bucket"
+  value       = module.storage.functions_source_bucket_name
 }
 
-output "raw_dataset_id" {
-  description = "BigQuery dataset ID for raw external tables"
-  value       = google_bigquery_dataset.raw_ext.dataset_id
+output "bucket_prefixes" {
+  description = "List of created GCS prefixes"
+  value       = module.storage.bucket_prefixes
 }
 
-output "curated_dataset_id" {
-  description = "BigQuery dataset ID for curated data"
-  value       = google_bigquery_dataset.curated.dataset_id
-}
-
-output "consumption_dataset_id" {
-  description = "BigQuery dataset ID for consumption data marts"
-  value       = google_bigquery_dataset.consumption_marts.dataset_id
-}
-
-output "dataset_locations" {
-  description = "Map of dataset names to their locations"
+# BigQuery outputs
+output "bigquery_datasets" {
+  description = "Map of BigQuery dataset IDs"
   value = {
-    raw_ext            = google_bigquery_dataset.raw_ext.location
-    curated           = google_bigquery_dataset.curated.location
-    consumption_marts = google_bigquery_dataset.consumption_marts.location
+    validated_external = module.bigquery.validated_external_dataset_id
+    curated           = module.bigquery.curated_dataset_id
+    marts             = module.bigquery.marts_dataset_id
+    governance        = module.bigquery.governance_dataset_id
   }
 }
 
-output "resource_labels" {
-  description = "Common labels applied to all resources"
-  value       = local.common_labels
+output "governance_tables" {
+  description = "List of governance table IDs"
+  value       = module.bigquery.governance_tables
 }
 
-output "name_prefix" {
-  description = "The generated naming prefix used for resources"
-  value       = local.name_prefix
+# IAM outputs
+output "service_accounts" {
+  description = "Map of all service account emails"
+  value       = module.iam.all_service_accounts
 }
 
-# Service account outputs
-output "service_account_email" {
-  description = "Email of the created service account"
-  value       = google_service_account.agent.email
+# Networking outputs
+output "pubsub_topics" {
+  description = "Map of Pub/Sub topic names"
+  value = {
+    pipeline_coordinator = module.networking.pipeline_coordinator_topic
+    escalation_alerts   = module.networking.escalation_alerts_topic
+  }
 }
 
-output "service_account_name" {
-  description = "Name of the created service account"
-  value       = google_service_account.agent.name
+# Dataplex outputs
+output "dataplex_lake" {
+  description = "Name of the Dataplex lake"
+  value       = module.dataplex.lake_name
 }
 
-output "service_account_key" {
-  description = "Private key for the service account (base64 encoded)"
-  value       = var.create_service_account_key ? google_service_account_key.agent_key[0].private_key : null
-  sensitive   = true
+output "dataplex_zones" {
+  description = "Map of Dataplex zone names"
+  value = {
+    raw         = module.dataplex.raw_zone_name
+    curated     = module.dataplex.curated_zone_name
+    consumption = module.dataplex.consumption_zone_name
+  }
 }
 
-output "enabled_apis" {
-  description = "List of APIs that were enabled"
-  value       = local.required_apis
+# Monitoring outputs
+output "monitoring_dashboard" {
+  description = "URL of the pipeline health monitoring dashboard"
+  value       = module.monitoring.dashboard_url
+}
+
+output "alert_policies" {
+  description = "List of monitoring alert policy IDs"
+  value       = module.monitoring.alert_policies
+}
+
+# Infrastructure summary
+output "infrastructure_summary" {
+  description = "Summary of deployed infrastructure"
+  value = {
+    name_prefix           = local.name_prefix
+    region               = var.region
+    environment          = var.environment
+    raw_data_bucket      = module.storage.raw_data_bucket_name
+    bigquery_datasets    = length(module.bigquery.governance_tables)
+    service_accounts     = length(keys(module.iam.all_service_accounts))
+    dataplex_assets      = length(module.dataplex.all_assets)
+  }
 }

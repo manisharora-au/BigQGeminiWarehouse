@@ -1,5 +1,11 @@
 # Todo
 
+- [x] Add information about IDENTITY/auto-increment columns in BigQuery (Current Task)
+
+- [x] Add instructions for cancelling running BigQuery operations
+
+- [x] Document and test BigQuery extension usage (Current Task)
+
 - [x] Pull latest changes from origin main
 - [x] Pull latest changes from origin
     - [x] Stash local changes to `tasks/todo.md`

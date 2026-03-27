@@ -12,11 +12,26 @@ pyvenv.cfg
 # data folder
 data/
 
-# Terraform
+# Terraform - sensitive files and state
 terraform/.terraform/
+terraform/.terraform.lock.hcl
 terraform/*.tfstate*
-terraform/*.tstate*
+terraform/*.tfstate.backup*
 terraform/terraform.tfvars
+terraform/*.auto.tfvars
+terraform/override.tf
+terraform/override.tf.json
+terraform/*.tfplan
+terraform/*.tfplan.*
+terraform/crash.log
+terraform/crash.*.log
+terraform/*.tfvars.json
+
+# Service account keys (anywhere in project)
+**/*.json
+!**/package*.json
+!**/.vscode/*.json
+!**/tsconfig*.json
 
 # Scripts and logs
 *.log
