@@ -1,9 +1,11 @@
 # ==============================================================================
 # Terraform Outputs - BigQuery Gemini Data Warehouse
-# Description: Output values from all infrastructure modules
+# Description: Exports important infrastructure attributes (IDs, names, URLs) 
+#              from the deployed modules for reference by other tools or systems.
 # ==============================================================================
 
 # Project outputs
+# Details about the GCP Project and successfully enabled underlying services.
 output "project_id" {
   description = "The GCP Project ID"
   value       = var.project_id
@@ -11,10 +13,11 @@ output "project_id" {
 
 output "enabled_apis" {
   description = "List of enabled GCP APIs"
-  value       = module.project.enabled_apis
+  value       = module.apis.enabled_apis
 }
 
 # Storage outputs
+# Names of the deployed Cloud Storage buckets making up the raw data tier.
 output "raw_data_bucket" {
   description = "Name of the primary data bucket"
   value       = module.storage.raw_data_bucket_name
@@ -31,6 +34,7 @@ output "bucket_prefixes" {
 }
 
 # BigQuery outputs
+# Logical mappings to the finalized datasets for the medallion data pipeline.
 output "bigquery_datasets" {
   description = "Map of BigQuery dataset IDs"
   value = {
@@ -47,12 +51,14 @@ output "governance_tables" {
 }
 
 # IAM outputs
+# References to provisioned service accounts to be used by pipeline compute resources.
 output "service_accounts" {
   description = "Map of all service account emails"
   value       = module.iam.all_service_accounts
 }
 
 # Networking outputs
+# Provisioned Pub/Sub topics for triggering functions and alerting incidents.
 output "pubsub_topics" {
   description = "Map of Pub/Sub topic names"
   value = {
@@ -62,6 +68,7 @@ output "pubsub_topics" {
 }
 
 # Dataplex outputs
+# Identifying details for the centralized Dataplex lake and managed zones.
 output "dataplex_lake" {
   description = "Name of the Dataplex lake"
   value       = module.dataplex.lake_name
@@ -77,6 +84,7 @@ output "dataplex_zones" {
 }
 
 # Monitoring outputs
+# Links to monitoring resources tracing the pipeline's operational state.
 output "monitoring_dashboard" {
   description = "URL of the pipeline health monitoring dashboard"
   value       = module.monitoring.dashboard_url
@@ -88,6 +96,7 @@ output "alert_policies" {
 }
 
 # Infrastructure summary
+# A high-level overview of resources provisioned during this deployment.
 output "infrastructure_summary" {
   description = "Summary of deployed infrastructure"
   value = {

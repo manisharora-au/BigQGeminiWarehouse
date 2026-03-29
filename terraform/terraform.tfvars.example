@@ -1,29 +1,44 @@
 # ==============================================================================
 # Terraform Variables Example Configuration
-# Description: Template for terraform.tfvars - copy and customize for your environment
+# Description: Template for terraform.tfvars. It serves as a starting point 
+#              to define environment-specific values. Copy and customize 
+#              this file for targeting your specific deployment environment.
 # ==============================================================================
 
+# ------------------------------------------------------------------------------
 # Core project configuration (REQUIRED)
+# These represent baseline parameters required to bind Terraform executions 
+# to a specific Google Cloud project and logical structure.
+# ------------------------------------------------------------------------------
 project_id           = "your-gcp-project-id"
 region              = "us-central1"
-environment         = "dev"
+environment         = "dev"                 # Often parameterized for dev, staging, prod
 project_name        = "hackathon"
 organization_prefix = "yourorg"
 
+# ------------------------------------------------------------------------------
 # Optional configuration
+# Useful for overriding infrastructure defaults such as monitoring notifications
+# or adding comprehensive cost allocation labels.
+# ------------------------------------------------------------------------------
 labels = {
   owner       = "your-team"
   cost_center = "engineering"
   application = "data-warehouse"
 }
 
-force_destroy_buckets      = true   # Set to false in production
-enable_vpc_service_controls = false # Requires organization-level permissions
+# (CAUTION) Set to false in production to prevent accidental data deletion
+force_destroy_buckets      = true   
+
+# Setting this to true requires organization-level VPC Service Controls permissions
+enable_vpc_service_controls = false 
+
 notification_email         = "your-email@example.com"
 
 # ==============================================================================
 # Usage Instructions:
-# 1. Copy this file to terraform.tfvars
-# 2. Update the values above with your actual configuration
-# 3. The terraform.tfvars file is ignored by git for security
+# 1. Copy this file into a local configuration variable file named `terraform.tfvars`.
+# 2. Update the dummy values assigned above with your actual deployment configuration.
+# 3. The newly generated `terraform.tfvars` file contains secrets/unique info and is 
+#    typically ignored by git for security purposes.
 # ==============================================================================

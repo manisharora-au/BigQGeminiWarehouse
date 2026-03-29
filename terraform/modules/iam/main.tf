@@ -11,6 +11,22 @@ resource "google_service_account" "cloudfunction_router" {
   project      = var.project_id
 }
 
+# The below conastruct creates multiple IAM bindings for the service account
+# auxh as below.
+# Intead of creating multiple line of resource, the toset function is used to create multiple IAM bindings for the service account 
+
+# resource "google_project_iam_member" "role_storage" {
+#   project = var.project_id
+#   role    = "roles/storage.objectAdmin"
+#   member  = "serviceAccount:${google_service_account.cloudfunction_router.email}"
+# }
+
+# resource "google_project_iam_member" "role_logging" {
+#   project = var.project_id
+#   role    = "roles/logging.logWriter"
+#   member  = "serviceAccount:${google_service_account.cloudfunction_router.email}"
+}
+
 resource "google_project_iam_member" "cloudfunction_router_roles" {
   for_each = toset([
     "roles/storage.objectAdmin",     # Read from inbox/, write to raw/

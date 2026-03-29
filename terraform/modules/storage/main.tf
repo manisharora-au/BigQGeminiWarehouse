@@ -5,10 +5,12 @@
 
 # Primary data bucket with six prefixes for file routing
 resource "google_storage_bucket" "raw_data" {
-  name                        = "${var.name_prefix}-raw-data"
+  name = "${var.name_prefix}-raw-data"
+  # Name equates to intelia-hackathon-dev-raw-data  
   location                    = var.region
   force_destroy               = var.force_destroy
   uniform_bucket_level_access = true
+
 
   # Lifecycle rules for cost optimization
   lifecycle_rule {
@@ -31,11 +33,11 @@ resource "google_storage_bucket" "raw_data" {
     }
   }
 
-  # Retention lock on raw/ prefix for 365 days (governance)
+  # delete raw/ objects after 365 days"
   lifecycle_rule {
     condition {
-      age                = 365
-      matches_prefix     = ["raw/"]
+      age            = 365
+      matches_prefix = ["raw/"]
     }
     action {
       type = "Delete"
@@ -43,7 +45,7 @@ resource "google_storage_bucket" "raw_data" {
   }
 
   labels = merge(var.labels, {
-    layer = "raw"
+    layer   = "raw"
     purpose = "data-lake"
   })
 }
@@ -53,6 +55,10 @@ resource "google_storage_bucket_object" "inbox_prefix" {
   name    = "inbox/"
   content = " "
   bucket  = google_storage_bucket.raw_data.name
+
+  # Although redundant becuase the bucket is created with the prefix, it is added for safety  
+  depends_on = [google_storage_bucket.raw_data]
+
 }
 
 resource "google_storage_bucket_object" "raw_prefix" {

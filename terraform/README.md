@@ -12,7 +12,7 @@ terraform/
 ├── providers.tf             # Provider configuration
 ├── terraform.tfvars.example # Configuration template
 └── modules/                 # Reusable modules
-    ├── project/            # API enablement
+    ├── apis/               # API enablement
     ├── storage/            # GCS buckets with lifecycle rules
     ├── bigquery/           # Datasets and governance tables
     ├── iam/                # Service accounts and IAM roles
@@ -23,7 +23,7 @@ terraform/
 
 ## Seven Infrastructure Modules
 
-1. **Project** - Enables 15 required GCP APIs
+1. **APIs** - Enables 15 required GCP APIs
 2. **Storage** - Creates data lake buckets with 6 prefixes (inbox/, raw/, validated/, quarantine/, archive/, temp/)
 3. **BigQuery** - Creates 4 datasets + governance tables
 4. **IAM** - Creates 7 service accounts with least-privilege roles

@@ -1,5 +1,5 @@
 # ==============================================================================
-# Module: Project API Management
+# Module: APIs Management
 # Description: Enables required GCP APIs for data warehouse platform
 # ==============================================================================
 

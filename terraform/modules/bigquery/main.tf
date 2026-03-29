@@ -9,10 +9,10 @@ resource "google_bigquery_dataset" "validated_external" {
   friendly_name = "Validated External Tables"
   description   = "External tables pointing to validated GCS files with hive partitioning"
   location      = var.region
-  
+
   labels = merge(var.labels, {
     layer = "raw"
-    type  = "external"
+    type  = "external" # This is for External Tables
   })
 }
 
@@ -22,7 +22,7 @@ resource "google_bigquery_dataset" "curated" {
   friendly_name = "Curated Data"
   description   = "Cleaned and conformed tables built by Dataform"
   location      = var.region
-  
+
   labels = merge(var.labels, {
     layer = "curated"
   })
@@ -34,7 +34,7 @@ resource "google_bigquery_dataset" "marts" {
   friendly_name = "Data Marts"
   description   = "Dimensional models and data marts for analytics"
   location      = var.region
-  
+
   labels = merge(var.labels, {
     layer = "consumption"
   })
@@ -46,7 +46,7 @@ resource "google_bigquery_dataset" "governance" {
   friendly_name = "Data Governance"
   description   = "Pipeline logs, quality metrics, and governance metadata"
   location      = var.region
-  
+
   labels = merge(var.labels, {
     purpose = "governance"
   })
@@ -56,7 +56,7 @@ resource "google_bigquery_dataset" "governance" {
 resource "google_bigquery_table" "validation_log" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "validation_log"
-  
+
   schema = jsonencode([
     {
       name = "file_path"
@@ -99,7 +99,7 @@ resource "google_bigquery_table" "validation_log" {
       mode = "NULLABLE"
     }
   ])
-  
+
   labels = var.labels
 }
 
@@ -107,7 +107,7 @@ resource "google_bigquery_table" "validation_log" {
 resource "google_bigquery_table" "quality_failures" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "quality_failures"
-  
+
   schema = jsonencode([
     {
       name = "assertion_name"
@@ -140,7 +140,7 @@ resource "google_bigquery_table" "quality_failures" {
       mode = "NULLABLE"
     }
   ])
-  
+
   labels = var.labels
 }
 
@@ -148,7 +148,7 @@ resource "google_bigquery_table" "quality_failures" {
 resource "google_bigquery_table" "ingestion_log" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "ingestion_log"
-  
+
   schema = jsonencode([
     {
       name = "pipeline_name"
@@ -201,7 +201,7 @@ resource "google_bigquery_table" "ingestion_log" {
       mode = "NULLABLE"
     }
   ])
-  
+
   labels = var.labels
 }
 
@@ -209,7 +209,7 @@ resource "google_bigquery_table" "ingestion_log" {
 resource "google_bigquery_table" "ai_insights" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "ai_insights"
-  
+
   schema = jsonencode([
     {
       name = "insight_id"
@@ -247,6 +247,6 @@ resource "google_bigquery_table" "ai_insights" {
       mode = "NULLABLE"
     }
   ])
-  
+
   labels = var.labels
 }
