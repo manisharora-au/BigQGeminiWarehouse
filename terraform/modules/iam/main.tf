@@ -6,15 +6,14 @@
 # Service Account: Cloud Functions File Router
 resource "google_service_account" "cloudfunction_router" {
   account_id   = "${var.name_prefix}-cf-router"
+  # the account_id will look like intelia-hackathon-dev-cf-router
   display_name = "Cloud Function File Router"
   description  = "Service account for Cloud Function that routes files from inbox to raw folders"
   project      = var.project_id
 }
 
-# The below conastruct creates multiple IAM bindings for the service account
-# auxh as below.
+# The below construct creates multiple IAM bindings (roles) for the service account as below.
 # Intead of creating multiple line of resource, the toset function is used to create multiple IAM bindings for the service account 
-
 # resource "google_project_iam_member" "role_storage" {
 #   project = var.project_id
 #   role    = "roles/storage.objectAdmin"
@@ -25,7 +24,6 @@ resource "google_service_account" "cloudfunction_router" {
 #   project = var.project_id
 #   role    = "roles/logging.logWriter"
 #   member  = "serviceAccount:${google_service_account.cloudfunction_router.email}"
-}
 
 resource "google_project_iam_member" "cloudfunction_router_roles" {
   for_each = toset([

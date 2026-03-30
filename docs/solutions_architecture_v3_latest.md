@@ -1,4 +1,5 @@
 # Solutions Architecture
+
 **BigQuery & Gemini Data Warehouse Challenge**
 *intelia Hackathon — v3.0 DRAFT*
 
@@ -12,27 +13,28 @@
    - 2.2 Why These Layers Are Separate
    - 2.3 Where GCP Services Map to Each Layer
    - 2.4 Agentic Design Principle
+   - 2.4.1 agents and agentic Lifecycle
    - 2.5 Schema Evolution Protocol
    - 2.6 The Two Pipelines
 3. [Architecture Overview](#3-architecture-overview)
-4. [Infrastructure & Automation](#4-infrastructure--automation)
-5. [Data Ingestion & Raw Layer](#5-data-ingestion--raw-layer)
+4. [Infrastructure &amp; Automation](#4-infrastructure--automation)
+5. [Data Ingestion &amp; Raw Layer](#5-data-ingestion--raw-layer)
    - 5.1 Cloud Storage — The Landing Zone
    - 5.2 Cloud Functions — The File Router
    - 5.3 Cloud Run Validator — The Validation Gate
    - 5.4 The Validation Log
    - 5.5 Alerting on Failure
    - 5.6 BigQuery External Tables
-6. [Transformation & Curated Layer](#6-transformation--curated-layer)
+6. [Transformation &amp; Curated Layer](#6-transformation--curated-layer)
    - 6.1 What Dataform Is and Why It Is Used
    - 6.2 The Three Transformation Steps
    - 6.3 Dataform Assertions — Data Quality Checks
    - 6.4 The Quality Failures Table and the Validation Log Together
-7. [Consumption Layer & Data Marts](#7-consumption-layer--data-marts)
+7. [Consumption Layer &amp; Data Marts](#7-consumption-layer--data-marts)
 8. [Generative AI Integration](#8-generative-ai-integration)
-9. [Data & AI Governance](#9-data--ai-governance)
-10. [Scalability & Security](#10-scalability--security)
-11. [End-to-End Data Flow & Workflow Orchestration](#11-end-to-end-data-flow--workflow-orchestration)
+9. [Data &amp; AI Governance](#9-data--ai-governance)
+10. [Scalability &amp; Security](#10-scalability--security)
+11. [End-to-End Data Flow &amp; Workflow Orchestration](#11-end-to-end-data-flow--workflow-orchestration)
 
 ---
 
@@ -153,35 +155,34 @@ It also means each layer has a clear data contract. The Raw layer's contract is 
 
 The table below gives a single-sentence orientation for every GCP service used in this platform. Each service is explained in full in its respective section.
 
-| Layer | GCP Service | What it does |
-|---|---|---|
-| **Infrastructure** | Terraform | Provisions every GCP resource from scratch — storage buckets, BigQuery datasets, service accounts, networking controls, governance, and monitoring — as code, so the entire platform can be torn down and rebuilt on a new project without manual steps |
-| **Infrastructure** | Cloud Build | Runs the full deployment sequence automatically in order: provision infrastructure, deploy transformation logic, load initial data, run the pipeline |
-| **Infrastructure** | Secret Manager | Stores all passwords, API keys, and access credentials in one secure place; the pipeline reads from it but never writes to it |
-| **Infrastructure** | Cloud Monitoring | Watches the platform for problems — fires alerts when a file fails validation or the budget approaches its limit, and provides the CTO with a live operational dashboard |
-| **Infrastructure** | IAM & Service Accounts | Controls who and what can access each part of the platform; every component runs under its own dedicated account with access limited to only what it needs |
-| **Infrastructure** | VPC Service Controls | Creates a security boundary around the platform so that data in BigQuery and Cloud Storage cannot be accessed from outside the project, even if credentials were compromised |
-| **Infrastructure** | Private Google Access | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure |
-| **All layers** | Dataplex | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses |
-| **Raw** | Google Cloud Storage | Stores all platform data across six prefixes: `inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/` |
-| **Raw** | Cloud Functions — File Router | Triggered by a GCS Object Finalised event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, and moves the file into the correct `raw/{entity}/` subfolder; writing to `raw/` itself fires a second Object Finalised event that triggers the Validator |
-| **Raw** | Eventarc | Watches two GCS prefixes for Object Finalised events — fires on `inbox/` to trigger the File Router, and fires on `raw/` to trigger the Cloud Run Validator; both transitions are fully automatic with no polling or manual intervention |
-| **Raw** | Pub/Sub | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives |
-| **Raw** | Cloud Logging | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline |
-| **Raw** | Cloud Run — Validator | Checks every incoming file against a known set of rules before anything else touches it — correct column names, correct structure, correct encoding; files that pass move forward, files that fail are isolated and an alert is raised (see Section 2.5 for how schema changes are handled) |
-| **Raw** | BigQuery External Tables | Defined over the `validated/` prefix only — gives Dataform SQL access to files that have cleared the validation gate, while files in `raw/`, `inbox/`, and `quarantine/` remain invisible to BigQuery |
-| **Raw** | BigQuery (`governance` dataset) | Records the outcome of every file validation and every data quality check, giving the CTO a full audit trail of what was accepted, what was rejected, and why |
-| **Curated** | Google ADK — Pipeline Coordinator Agent | An AI agent that decides what transformation work needs to run after a file is validated — it checks the current state of the pipeline, identifies what is affected, and handles failures by deciding whether to retry, isolate the problem, or raise an alert |
-| **Curated** | Dataform | Runs the data transformation steps in the correct order — cleaning, enriching, and conforming the raw data into trusted entity tables that the Consumption layer can rely on |
-| **Curated** | BigQuery (`curated` dataset) | Stores cleaned and enriched versions of the four core entities — customers, products, orders, and order_items — retaining the full history of every record that has ever arrived, with records older than 90 days automatically removed |
-| **Consumption** | BigQuery (`marts` dataset) | Stores the dimensional model — dimension tables for customers, products, and dates, a central orders fact table, and five summary tables tailored to the specific questions the CCO and CTO need answered |
-| **Consumption** | BigQuery ML | Runs two AI tasks during the pipeline: scoring every customer with a churn risk probability, and generating a plain-English summary of each customer's profile using Gemini |
-| **Consumption** | BigQuery Data Agent | Allows the CCO and CTO to ask questions about the data in plain English directly from the BigQuery console and receive answers without writing any SQL |
-| **Consumption** | Google ADK — Insight Generation Agent | An AI agent that runs every night, identifies what changed most significantly in the data since the previous day, and writes a plain-English summary of those findings for both personas to read the following morning |
-| **Consumption** | Google ADK — Conversational Analytics Agent | An AI agent that answers natural language questions from the CCO and CTO — it identifies the right data, runs the query, interprets the result, and responds in plain English with a link to the relevant dashboard |
-| **Consumption** | Cloud Scheduler | Triggers the nightly Insight Generation Agent automatically, ensuring fresh insights are ready before business hours each day |
-| **Consumption** | Looker Studio | Delivers two visual dashboards — one for the CCO covering revenue, customer retention, and churn risk, and one for the CTO covering pipeline health, data quality, and platform cost |
-
+| Layer                    | GCP Service                                  | What it does                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Infrastructure** | Terraform                                    | Provisions every GCP resource from scratch — storage buckets, BigQuery datasets, service accounts, networking controls, governance, and monitoring — as code, so the entire platform can be torn down and rebuilt on a new project without manual steps                                                                                             |
+| **Infrastructure** | Cloud Build                                  | Runs the full deployment sequence automatically in order: provision infrastructure, deploy transformation logic, load initial data, run the pipeline                                                                                                                                                                                                  |
+| **Infrastructure** | Secret Manager                               | Stores all passwords, API keys, and access credentials in one secure place; the pipeline reads from it but never writes to it                                                                                                                                                                                                                         |
+| **Infrastructure** | Cloud Monitoring                             | Watches the platform for problems — fires alerts when a file fails validation or the budget approaches its limit, and provides the CTO with a live operational dashboard                                                                                                                                                                             |
+| **Infrastructure** | IAM & Service Accounts                       | Controls who and what can access each part of the platform; every component runs under its own dedicated account with access limited to only what it needs                                                                                                                                                                                            |
+| **Infrastructure** | VPC Service Controls                         | Creates a security boundary around the platform so that data in BigQuery and Cloud Storage cannot be accessed from outside the project, even if credentials were compromised                                                                                                                                                                          |
+| **Infrastructure** | Private Google Access                        | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure                                                                                                                                                                                              |
+| **All layers**     | Dataplex                                     | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses                                                                                             |
+| **Raw**            | Google Cloud Storage                         | Stores all platform data across six prefixes:`inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/`                                                                                                                |
+| **Raw**            | Cloud Functions — File Router               | Triggered by a GCS Object Finalised event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, and moves the file into the correct `raw/{entity}/` subfolder; writing to `raw/` itself fires a second Object Finalised event that triggers the Validator |
+| **Raw**            | Eventarc                                     | Watches two GCS prefixes for Object Finalised events — fires on `inbox/` to trigger the File Router, and fires on `raw/` to trigger the Cloud Run Validator; both transitions are fully automatic with no polling or manual intervention                                                                                                         |
+| **Raw**            | Pub/Sub                                      | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives                                                                                                                                                    |
+| **Raw**            | Cloud Logging                                | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline                                                                                                                                                                                          |
+| **Raw**            | Cloud Run — Validator                       | Checks every incoming file against a known set of rules before anything else touches it — correct column names, correct structure, correct encoding; files that pass move forward, files that fail are isolated and an alert is raised (see Section 2.5 for how schema changes are handled)                                                          |
+| **Raw**            | BigQuery External Tables                     | Defined over the `validated/` prefix only — gives Dataform SQL access to files that have cleared the validation gate, while files in `raw/`, `inbox/`, and `quarantine/` remain invisible to BigQuery                                                                                                                                        |
+| **Raw**            | BigQuery (`governance` dataset)            | Records the outcome of every file validation and every data quality check, giving the CTO a full audit trail of what was accepted, what was rejected, and why                                                                                                                                                                                         |
+| **Curated**        | Google ADK — Pipeline Coordinator Agent     | An AI agent that decides what transformation work needs to run after a file is validated — it checks the current state of the pipeline, identifies what is affected, and handles failures by deciding whether to retry, isolate the problem, or raise an alert                                                                                       |
+| **Curated**        | Dataform                                     | Runs the data transformation steps in the correct order — cleaning, enriching, and conforming the raw data into trusted entity tables that the Consumption layer can rely on                                                                                                                                                                         |
+| **Curated**        | BigQuery (`curated` dataset)               | Stores cleaned and enriched versions of the four core entities — customers, products, orders, and order_items — retaining the full history of every record that has ever arrived, with records older than 90 days automatically removed                                                                                                             |
+| **Consumption**    | BigQuery (`marts` dataset)                 | Stores the dimensional model — dimension tables for customers, products, and dates, a central orders fact table, and five summary tables tailored to the specific questions the CCO and CTO need answered                                                                                                                                            |
+| **Consumption**    | BigQuery ML                                  | Runs two AI tasks during the pipeline: scoring every customer with a churn risk probability, and generating a plain-English summary of each customer's profile using Gemini                                                                                                                                                                           |
+| **Consumption**    | BigQuery Data Agent                          | Allows the CCO and CTO to ask questions about the data in plain English directly from the BigQuery console and receive answers without writing any SQL                                                                                                                                                                                                |
+| **Consumption**    | Google ADK — Insight Generation Agent       | An AI agent that runs every night, identifies what changed most significantly in the data since the previous day, and writes a plain-English summary of those findings for both personas to read the following morning                                                                                                                                |
+| **Consumption**    | Google ADK — Conversational Analytics Agent | An AI agent that answers natural language questions from the CCO and CTO — it identifies the right data, runs the query, interprets the result, and responds in plain English with a link to the relevant dashboard                                                                                                                                  |
+| **Consumption**    | Cloud Scheduler                              | Triggers the nightly Insight Generation Agent automatically, ensuring fresh insights are ready before business hours each day                                                                                                                                                                                                                         |
+| **Consumption**    | Looker Studio                                | Delivers two visual dashboards — one for the CCO covering revenue, customer retention, and churn risk, and one for the CTO covering pipeline health, data quality, and platform cost                                                                                                                                                                 |
 
 ---
 
@@ -218,6 +219,52 @@ This agent is also accessible directly from the BigQuery console via the **BigQu
 Google ADK is chosen over a bespoke Vertex AI Agent Builder configuration for three reasons. First, ADK agents are code-first — the agent logic, tools, and system prompts are defined in Python and version-controlled in Git alongside the Dataform SQLX models, giving the CTO a single auditable codebase. Second, ADK natively supports multi-turn reasoning and tool chaining, which the Pipeline Coordinator and Insight Generation agents both require. Third, ADK agents deploy directly to Cloud Run, keeping the infrastructure footprint consistent with the rest of the platform — no additional managed runtime is introduced.
 
 The boundary between deterministic automation and agentic reasoning is a deliberate architectural line, not a default. Every component on the deterministic side of that line is there because correctness is non-negotiable. Every component on the agentic side is there because static logic is insufficient for the decisions it needs to make.
+
+**2.4.1 Agents and Agentic Lifecycle**
+
+**How an ADK agent on Cloud Run gets instantiated**
+
+Cloud Run runs containers. When you deploy an ADK agent to Cloud Run, you are packaging the agent — its tools, system prompt, and reasoning logic — as a Python application inside a Docker container and deploying that container as a Cloud Run service.
+
+Cloud Run is serverless, which means the container does not run continuously. It starts when a request arrives and shuts down after a period of inactivity. This is called a cold start. For an ADK agent on Cloud Run, the instantiation sequence looks like this:
+
+A trigger arrives — for the Pipeline Coordinator Agent that is a Pub/Sub message push, for the Insight Generation Agent that is an HTTP request from Cloud Scheduler, for the Conversational Agent that is an HTTP request from the user interface. Cloud Run receives the trigger and starts the container if one is not already running. The container starts, the Python process initialises, the ADK agent framework loads, and the agent is now ready to handle the request.
+
+---
+
+**The lifecycle of a single agent invocation**
+
+Once instantiated, a single invocation follows this sequence:
+
+The agent receives the input — either a Pub/Sub message payload or an HTTP request body containing the user's question or the pipeline event. The ADK framework passes this to the agent's reasoning loop, which runs on Gemini. The agent reads its system prompt, which defines its identity, the tools available to it, and the rules it must follow. It then reasons over the input and decides what to do.
+
+If the agent needs information — for example, the Pipeline Coordinator needs to know what Dataform models last ran successfully — it calls a tool. A tool in ADK is a Python function that the agent can invoke. The function executes, returns a result, and the agent incorporates that result into its next reasoning step. This loop — reason, call tool, observe result, reason again — continues until the agent reaches a conclusion and generates a final response.
+
+The response is returned, the invocation ends, and if no further requests arrive within the configured idle timeout, Cloud Run shuts the container down.
+
+---
+
+**What this means for each of the three agents**
+
+The Pipeline Coordinator Agent is triggered by Pub/Sub push. When the Validator publishes a PASS message, Pub/Sub delivers it to the agent's Cloud Run service URL as an HTTP POST. The agent wakes up, processes the pipeline coordination task — checking state, triggering Dataform, monitoring assertions, deciding on failures — and then terminates. Each file validation event is one invocation.
+
+The Insight Generation Agent is triggered by Cloud Scheduler, which sends an HTTP request to the agent's Cloud Run service URL at the configured nightly time. The agent wakes up, runs its autonomous analysis across the mart tables, writes to `governance.ai_insights`, and terminates. One invocation per night.
+
+The Conversational Analytics Agent is triggered by an HTTP request from the user — either through a custom frontend or the Looker Studio embedded interface. Each question is one invocation. Because ADK supports multi-turn reasoning within a single invocation, the agent can call multiple tools and reformulate queries before responding, all within one request-response cycle. However, between separate questions there is no persistent memory unless you explicitly build a conversation history mechanism that passes prior context in each new request.
+
+---
+
+**The key implication — no persistent state**
+
+This is the most important thing to understand about Cloud Run agents. Each invocation starts fresh. The agent does not remember the previous invocation. If the Pipeline Coordinator handled a file yesterday, it has no memory of that today — it must query `governance.ingestion_log` to reconstruct what happened. This is why those governance tables are so important architecturally. They are the agent's external memory. The agent's state lives in BigQuery, not in the agent process itself.
+
+This is also why the Conversational Agent needs to receive conversation history in the request if you want it to maintain context across questions — the container that handled the last question may not even be the same container instance that handles the next one.
+
+---
+
+**Cold start consideration**
+
+For the Pipeline Coordinator and Insight Generation agents, cold start latency is acceptable — they are background pipeline components and a few extra seconds of container startup does not affect the end-to-end latency target meaningfully. For the Conversational Analytics Agent, if you want a snappy user experience, you can configure Cloud Run with a minimum instance count of 1, which keeps one container warm at all times at a small continuous cost. This eliminates cold start for interactive queries.
 
 ---
 
@@ -261,6 +308,7 @@ Any change to a schema contract requires a deliberate Git commit, code review, a
 The source file arrives with a column not present in `EXPECTED_SCHEMAS`. The validator rejects the file, moves it to `quarantine/`, writes a FAIL record to `governance.validation_log` with `failed_check = "unexpected_column"` and `actual_value` containing the full received column list, and fires a Cloud Monitoring alert.
 
 Resolution process:
+
 1. The team reviews the quarantine alert and determines whether the new column is intentional and valuable downstream
 2. `EXPECTED_SCHEMAS` is updated in Git to include the new column
 3. The corresponding `curated_*` Dataform model is updated to cast and rename the new column
@@ -278,11 +326,11 @@ This is higher urgency than an additive change because a renamed or removed colu
 
 The `governance.validation_log` record provides the team with a precise diff to work from rather than a generic failure message:
 
-| Field | Example value |
-|---|---|
-| `failed_check` | `column_name_mismatch` |
+| Field              | Example value                                                                     |
+| ------------------ | --------------------------------------------------------------------------------- |
+| `failed_check`   | `column_name_mismatch`                                                          |
 | `expected_value` | `order_id, customer_id, product_id, order_date, quantity, total_amount, status` |
-| `actual_value` | `order_id, customer_id, product_id, order_date, quantity, amount, status` |
+| `actual_value`   | `order_id, customer_id, product_id, order_date, quantity, amount, status`       |
 
 In this example the diff is immediately obvious: `total_amount` has been renamed to `amount` in the source.
 
@@ -297,7 +345,6 @@ Dataplex daily quality scans on the `curated.*` and `marts.*` datasets provide a
 **The reprocessing path for quarantined files**
 
 Every file moved to `quarantine/` is retained there for the full 365-day GCS retention window. Once the schema contract has been updated and redeployed, the quarantined file can be manually copied back to `inbox/` with its original file name, which re-triggers the File Router and the full Eventarc → Validator → Pipeline flow from the beginning. The file is re-validated against the updated contract. If it now passes, it proceeds through the pipeline as normal. The original quarantine record in `governance.validation_log` is preserved — it is never deleted or updated — providing a complete audit trail of the rejection, the resolution, and the reprocessing.
-
 
 ---
 
@@ -344,6 +391,7 @@ The Pipeline Coordinator Agent checks what has already run, determines which tra
 This mode is triggered either by the deployment pipeline on first load, or manually after a schema change or a significant data correction. Dataform runs all transformation models across all four entities in dependency order — customers, then products, then orders, then order_items — rebuilding every curated table and every mart table from scratch. BigQuery ML re-scores all customers and regenerates all AI summaries. Dataplex scans all updated tables. This mode takes longer but guarantees a completely consistent state across all layers.
 
 ---
+
 ## 3. Architecture Overview
 
 The following sections (3.1 through 3.4) describe each layer in detail, one at a time. Each section is self-contained and can be read independently. The sequence follows the deployment and data flow order: Infrastructure first, then Raw, then Curated, then Consumption.
@@ -400,25 +448,25 @@ This bucket is provided by intelia and contains the synthetic retail dataset use
 
 This is the platform's own bucket, provisioned by Terraform and owned entirely by the platform. All ongoing data operations happen here. It is organised into six areas, each with a specific purpose and specific access controls:
 
-| Path | Purpose |
-|---|---|
-| `gs://intelia-hackathon-dev-raw-data/inbox/` | Files land here first — the source drops files with no folder convention required |
-| `gs://intelia-hackathon-dev-raw-data/raw/customers/` | Customer files staged here by the File Router — flat, no partition structure |
-| `gs://intelia-hackathon-dev-raw-data/raw/products/` | Product files staged here by the File Router — flat, no partition structure |
-| `gs://intelia-hackathon-dev-raw-data/raw/orders/` | Order files staged here by the File Router — flat, no partition structure |
-| `gs://intelia-hackathon-dev-raw-data/raw/order_items/` | Order item files staged here by the File Router — flat, no partition structure |
-| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/` | Validated full customer extracts — partition structure applied by the Validator on promotion |
-| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=YYYY-MM-DD/` | Validated delta customer files — one dated subfolder per successful drop |
-| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=full/` | Validated full product extracts |
-| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=delta/date=YYYY-MM-DD/` | Validated delta product files |
-| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=full/` | Validated full order extracts |
-| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=delta/date=YYYY-MM-DD/` | Validated delta order files |
-| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=full/` | Validated full order item extracts |
-| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=delta/date=YYYY-MM-DD/` | Validated delta order item files |
-| `gs://intelia-hackathon-dev-raw-data/validated/` | Files that passed all validation checks — cleared for processing |
-| `gs://intelia-hackathon-dev-raw-data/quarantine/` | Files that failed a check — held for manual review |
-| `gs://intelia-hackathon-dev-raw-data/archive/` | Validated files moved here after processing completes |
-| `gs://intelia-hackathon-dev-raw-data/temp/` | Temporary working space for Cloud Run jobs |
+| Path                                                                                           | Purpose                                                                                       |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `gs://intelia-hackathon-dev-raw-data/inbox/`                                                 | Files land here first — the source drops files with no folder convention required            |
+| `gs://intelia-hackathon-dev-raw-data/raw/customers/`                                         | Customer files staged here by the File Router — flat, no partition structure                 |
+| `gs://intelia-hackathon-dev-raw-data/raw/products/`                                          | Product files staged here by the File Router — flat, no partition structure                  |
+| `gs://intelia-hackathon-dev-raw-data/raw/orders/`                                            | Order files staged here by the File Router — flat, no partition structure                    |
+| `gs://intelia-hackathon-dev-raw-data/raw/order_items/`                                       | Order item files staged here by the File Router — flat, no partition structure               |
+| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/`                    | Validated full customer extracts — partition structure applied by the Validator on promotion |
+| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=YYYY-MM-DD/`   | Validated delta customer files — one dated subfolder per successful drop                     |
+| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=full/`                     | Validated full product extracts                                                               |
+| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=delta/date=YYYY-MM-DD/`    | Validated delta product files                                                                 |
+| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=full/`                       | Validated full order extracts                                                                 |
+| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=delta/date=YYYY-MM-DD/`      | Validated delta order files                                                                   |
+| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=full/`                  | Validated full order item extracts                                                            |
+| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=delta/date=YYYY-MM-DD/` | Validated delta order item files                                                              |
+| `gs://intelia-hackathon-dev-raw-data/validated/`                                             | Files that passed all validation checks — cleared for processing                             |
+| `gs://intelia-hackathon-dev-raw-data/quarantine/`                                            | Files that failed a check — held for manual review                                           |
+| `gs://intelia-hackathon-dev-raw-data/archive/`                                               | Validated files moved here after processing completes                                         |
+| `gs://intelia-hackathon-dev-raw-data/temp/`                                                  | Temporary working space for Cloud Run jobs                                                    |
 
 The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The File Router Cloud Function is the only process permitted to move files from `inbox/` to `raw/`. The validator is the only process permitted to move files from `raw/` to `validated/` or `quarantine/`. No other service has write access to any of those prefixes. This two-step routing ensures that files are both correctly structured and validated before they can reach the transformation layer.
 
@@ -434,11 +482,11 @@ When a file lands in the `inbox/` prefix, GCS fires an **Object Finalised event*
 
 The File Router reads the file name and matches it against a known set of naming patterns:
 
-| File name pattern | Entity |
-|---|---|
-| `customers_*.csv` | customers |
-| `products_*.csv` | products |
-| `orders_*.csv` | orders |
+| File name pattern     | Entity      |
+| --------------------- | ----------- |
+| `customers_*.csv`   | customers   |
+| `products_*.csv`    | products    |
+| `orders_*.csv`      | orders      |
 | `order_items_*.csv` | order_items |
 
 If the file name does not match any known pattern, the File Router moves it to `quarantine/inbox_unrecognised/` and writes a log entry. The validation pipeline is not triggered.
@@ -450,6 +498,7 @@ The File Router checks whether the file name contains the word `delta`. A file n
 **What it does with the file**
 
 For both full load and delta files, the File Router moves the file to a flat entity subfolder:
+
 ```
 raw/{entity}/filename.csv
 ```
@@ -472,25 +521,25 @@ Dataflow is Google's service for processing large volumes of data in parallel. I
 
 Dataform assertions — which run inside BigQuery as part of the transformation process — handle row-level data quality checks after the file has been accepted. The validator handles structural checks before the file is accepted. These two layers are complementary and serve different purposes.
 
-| What is being checked | Where it is checked |
-|---|---|
-| Is this file the right shape to enter the platform? | Cloud Run Validator — before anything else runs |
+| What is being checked                               | Where it is checked                                   |
+| --------------------------------------------------- | ----------------------------------------------------- |
+| Is this file the right shape to enter the platform? | Cloud Run Validator — before anything else runs      |
 | Is the data inside the file correct and consistent? | Dataform assertions — after the file has been loaded |
 
 **What the validator checks**
 
 Every file is put through eight checks in sequence. If any check fails, the file is rejected immediately and the remaining checks are not run.
 
-| Check | What it looks for |
-|---|---|
-| Column names | Every column name in the file header must exactly match the expected list for that entity type |
-| Column count | The number of columns must equal the expected count — catches truncated or malformed files |
-| Column order | Columns must appear in the expected sequence — external tables read columns by position, not by name |
-| Non-empty file | The file must contain at least one data row beyond the header |
-| Encoding | The file must be UTF-8 encoded — files with BOM markers or Latin-1 encoding are rejected |
-| Delimiter | The field separator must be a comma — detects files that have been accidentally exported with tabs or pipes |
-| Date format | The first ten data rows are sampled to verify that date values in date columns can be parsed correctly |
-| File size | Files smaller than 100 bytes are rejected as likely empty or corrupted; anomalously large delta files trigger a warning |
+| Check          | What it looks for                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Column names   | Every column name in the file header must exactly match the expected list for that entity type                          |
+| Column count   | The number of columns must equal the expected count — catches truncated or malformed files                             |
+| Column order   | Columns must appear in the expected sequence — external tables read columns by position, not by name                   |
+| Non-empty file | The file must contain at least one data row beyond the header                                                           |
+| Encoding       | The file must be UTF-8 encoded — files with BOM markers or Latin-1 encoding are rejected                               |
+| Delimiter      | The field separator must be a comma — detects files that have been accidentally exported with tabs or pipes            |
+| Date format    | The first ten data rows are sampled to verify that date values in date columns can be parsed correctly                  |
+| File size      | Files smaller than 100 bytes are rejected as likely empty or corrupted; anomalously large delta files trigger a warning |
 
 **The schema contracts**
 
@@ -579,18 +628,18 @@ The alert is self-contained. A team member receiving it has everything needed to
 
 Every file the validator processes — whether it passes or fails — produces a record in the `governance.validation_log` BigQuery table. This table is the authoritative audit trail for everything that has ever been submitted to the platform.
 
-| Column | What it contains |
-|---|---|
-| `validation_id` | A unique identifier for this validation run |
-| `file_name` | The full GCS path of the file that was checked |
-| `entity_type` | Whether the file was customers, products, orders, or order_items |
-| `validation_timestamp` | When the check ran |
-| `outcome` | PASS or FAIL |
-| `failed_check` | The name of the check that failed — null if the file passed |
-| `expected_value` | What the validator expected to find — for example, the full expected column list |
-| `actual_value` | What the validator actually found in the file |
-| `row_count_sample` | How many data rows were sampled during the date format check |
-| `file_size_bytes` | The size of the file at the time it was checked |
+| Column                   | What it contains                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `validation_id`        | A unique identifier for this validation run                                       |
+| `file_name`            | The full GCS path of the file that was checked                                    |
+| `entity_type`          | Whether the file was customers, products, orders, or order_items                  |
+| `validation_timestamp` | When the check ran                                                                |
+| `outcome`              | PASS or FAIL                                                                      |
+| `failed_check`         | The name of the check that failed — null if the file passed                      |
+| `expected_value`       | What the validator expected to find — for example, the full expected column list |
+| `actual_value`         | What the validator actually found in the file                                     |
+| `row_count_sample`     | How many data rows were sampled during the date format check                      |
+| `file_size_bytes`      | The size of the file at the time it was checked                                   |
 
 The `expected_value` and `actual_value` columns together produce an exact diff for every failure. A team member receiving a quarantine alert does not need to open the file to understand what went wrong — the log record tells them precisely which check failed and what the discrepancy was.
 
@@ -680,12 +729,12 @@ The same pattern is used for `ext_products`, `ext_orders`, and `ext_order_items`
 
 At the external table stage, the data is exactly as it arrived in the source file. Column names match the CSV headers. Values are strings — nothing has been cast to a date, a number, or a boolean yet. Nulls, duplicates, and formatting inconsistencies are all present as they were in the source. The external table is a faithful, unmodified view of what passed the structural gate — the semantic cleaning happens in the Curated layer.
 
-| Table | Columns |
-|---|---|
-| `ext_customers` | `customer_id`, `first_name`, `last_name`, `email`, `signup_date`, `region`, `loyalty_tier` |
-| `ext_products` | `product_id`, `product_name`, `category`, `unit_price`, `stock_quantity`, `supplier_id` |
-| `ext_orders` | `order_id`, `customer_id`, `order_date`, `total_amount`, `status` |
-| `ext_order_items` | `order_item_id`, `order_id`, `product_id`, `quantity`, `unit_price`, `line_total` |
+| Table               | Columns                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `ext_customers`   | `customer_id`, `first_name`, `last_name`, `email`, `signup_date`, `region`, `loyalty_tier` |
+| `ext_products`    | `product_id`, `product_name`, `category`, `unit_price`, `stock_quantity`, `supplier_id`      |
+| `ext_orders`      | `order_id`, `customer_id`, `order_date`, `total_amount`, `status`                              |
+| `ext_order_items` | `order_item_id`, `order_id`, `product_id`, `quantity`, `unit_price`, `line_total`            |
 
 ---
 
@@ -747,9 +796,9 @@ Assertions run automatically as part of every Dataform execution — they do not
 
 The Cloud Run Validator and Dataform assertions are not redundant — they catch different categories of problem at different points in the pipeline.
 
-| What is being checked | Where it is checked | When it runs |
-|---|---|---|
-| Is the file structurally correct? | Cloud Run Validator | Before the file enters the platform |
+| What is being checked                    | Where it is checked | When it runs                                 |
+| ---------------------------------------- | ------------------- | -------------------------------------------- |
+| Is the file structurally correct?        | Cloud Run Validator | Before the file enters the platform          |
 | Is the data inside semantically correct? | Dataform assertions | After the data has been loaded into BigQuery |
 
 A file can pass the Cloud Run Validator — correct column names, correct structure, correct encoding — and still contain data that is semantically wrong: negative order amounts, customer IDs that do not exist in the customer table, duplicate order records. The validator cannot detect these because it only reads the file header. Dataform assertions catch them after the data is loaded.
@@ -758,32 +807,32 @@ A file can pass the Cloud Run Validator — correct column names, correct struct
 
 The following assertions run after every pipeline execution. Each one is a separate SQLX file in the `assertions/` folder of the Dataform project and is version-controlled in Git.
 
-| Assertion | Entity | What it checks | Why it matters |
-|---|---|---|---|
-| `assert_no_null_customer_ids` | Customers | Every row in `curated_customers` has a non-null `customer_id` | A customer without an ID cannot be joined to orders — it would silently drop from all downstream analysis |
-| `assert_no_null_order_ids` | Orders | Every row in `curated_orders` has a non-null `order_id` | An order without an ID cannot be joined to order items — the line-item detail would be lost |
-| `assert_no_null_order_item_ids` | Order items | Every row in `curated_order_items` has a non-null `order_item_id` | Orphaned line items corrupt revenue calculations |
-| `assert_order_amounts_positive` | Orders | `total_amount > 0` for all orders with status `completed` | A completed order with zero or negative value is either a data error or a refund that should be recorded differently |
-| `assert_order_item_quantities_positive` | Order items | `quantity > 0` for all order item rows | A line item with zero or negative quantity is always a data error |
-| `assert_referential_integrity_orders` | Orders | Every `customer_id` in `curated_orders` exists in `curated_customers` | An order linked to a non-existent customer cannot be attributed to a region, loyalty tier, or cohort |
-| `assert_referential_integrity_order_items` | Order items | Every `order_id` in `curated_order_items` exists in `curated_orders` | An order item with no parent order cannot be included in any revenue or product analysis |
-| `assert_referential_integrity_products` | Order items | Every `product_id` in `curated_order_items` exists in `curated_products` | An order item referencing a non-existent product cannot be categorised or priced correctly |
-| `assert_product_price_non_negative` | Products | `unit_price >= 0` across all products | A negative unit price is always a data error |
-| `assert_no_duplicate_order_items` | Order items | No duplicate `order_item_id` in `curated_order_items` | Duplicate line items would double-count revenue for every affected order |
+| Assertion                                    | Entity      | What it checks                                                                 | Why it matters                                                                                                       |
+| -------------------------------------------- | ----------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `assert_no_null_customer_ids`              | Customers   | Every row in `curated_customers` has a non-null `customer_id`              | A customer without an ID cannot be joined to orders — it would silently drop from all downstream analysis           |
+| `assert_no_null_order_ids`                 | Orders      | Every row in `curated_orders` has a non-null `order_id`                    | An order without an ID cannot be joined to order items — the line-item detail would be lost                         |
+| `assert_no_null_order_item_ids`            | Order items | Every row in `curated_order_items` has a non-null `order_item_id`          | Orphaned line items corrupt revenue calculations                                                                     |
+| `assert_order_amounts_positive`            | Orders      | `total_amount > 0` for all orders with status `completed`                  | A completed order with zero or negative value is either a data error or a refund that should be recorded differently |
+| `assert_order_item_quantities_positive`    | Order items | `quantity > 0` for all order item rows                                       | A line item with zero or negative quantity is always a data error                                                    |
+| `assert_referential_integrity_orders`      | Orders      | Every `customer_id` in `curated_orders` exists in `curated_customers`    | An order linked to a non-existent customer cannot be attributed to a region, loyalty tier, or cohort                 |
+| `assert_referential_integrity_order_items` | Order items | Every `order_id` in `curated_order_items` exists in `curated_orders`     | An order item with no parent order cannot be included in any revenue or product analysis                             |
+| `assert_referential_integrity_products`    | Order items | Every `product_id` in `curated_order_items` exists in `curated_products` | An order item referencing a non-existent product cannot be categorised or priced correctly                           |
+| `assert_product_price_non_negative`        | Products    | `unit_price >= 0` across all products                                        | A negative unit price is always a data error                                                                         |
+| `assert_no_duplicate_order_items`          | Order items | No duplicate `order_item_id` in `curated_order_items`                      | Duplicate line items would double-count revenue for every affected order                                             |
 
 **What happens when an assertion fails**
 
 When any assertion returns rows, Dataform marks that model's execution as failed and writes a structured failure record to the `governance.quality_failures` table in BigQuery. The record contains the assertion name, the entity type, the number of failing rows, the timestamp, and a sample of the failing row values so the problem can be diagnosed without running a separate query.
 
-| Column | What it contains |
-|---|---|
-| `assertion_id` | Unique identifier for this failure event |
-| `assertion_name` | Name of the assertion that failed |
-| `entity_type` | Which entity the assertion was checking |
-| `failed_row_count` | How many rows violated the rule |
-| `sample_failing_values` | A JSON sample of up to ten failing rows |
-| `pipeline_run_id` | Links back to the pipeline run that produced the failure |
-| `failure_timestamp` | When the assertion ran and failed |
+| Column                    | What it contains                                         |
+| ------------------------- | -------------------------------------------------------- |
+| `assertion_id`          | Unique identifier for this failure event                 |
+| `assertion_name`        | Name of the assertion that failed                        |
+| `entity_type`           | Which entity the assertion was checking                  |
+| `failed_row_count`      | How many rows violated the rule                          |
+| `sample_failing_values` | A JSON sample of up to ten failing rows                  |
+| `pipeline_run_id`       | Links back to the pipeline run that produced the failure |
+| `failure_timestamp`     | When the assertion ran and failed                        |
 
 The Pipeline Coordinator Agent reads this table when a failure is detected and uses the `assertion_name` and `failed_row_count` to decide on the appropriate response. A small number of failing rows on a referential integrity check may indicate a timing issue between two entity files and warrant a retry. A large number of failing rows on a null check may indicate a structural problem with the source data and warrant quarantine and escalation.
 
