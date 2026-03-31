@@ -96,7 +96,7 @@ resource "google_monitoring_alert_policy" "validator_error_alert" {
 
     #  The below threshold is set to 0, which means that if the validator errors are greater than 0, an alert will be triggered
     #  The duration of 300s means that the alert will be triggered if the validator errors are greater than 0 for 5 minutes
-    #  The comparison is set to COMPARISON_GREATER_THAN, which means that the alert will be triggered if the validator errors are greater than 0
+    #  The comparison is set to COMPARISON_GT, which means that the alert will be triggered if the validator errors are greater than 0
     #  The threshold_value is set to 0, which means that the alert will be triggered if the validator errors are greater than 0
     #  The aggregations block is used to aggregate the logs.
     #  This configuration is similar to creating an alert policy on GCP console
@@ -105,7 +105,7 @@ resource "google_monitoring_alert_policy" "validator_error_alert" {
       # filter is used to filter the logs
       filter         = "metric.type=\"logging.googleapis.com/user/${var.name_prefix}_validator_errors\" AND resource.type=\"global\""
       duration       = "300s"
-      comparison     = "COMPARISON_GREATER_THAN"
+      comparison     = "COMPARISON_GT"
       threshold_value = 0
       
       aggregations {
@@ -141,7 +141,7 @@ resource "google_monitoring_alert_policy" "pipeline_failure_alert" {
     condition_threshold {
       filter         = "metric.type=\"logging.googleapis.com/user/${var.name_prefix}_pipeline_failures\" AND resource.type=\"global\""
       duration       = "300s"
-      comparison     = "COMPARISON_GREATER_THAN"
+      comparison     = "COMPARISON_GT"
       threshold_value = 0
       
       aggregations {

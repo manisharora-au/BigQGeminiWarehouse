@@ -29,6 +29,10 @@ resource "google_dataplex_zone" "raw_zone" {
     location_type = "SINGLE_REGION"
   }
   
+  discovery_spec {
+    enabled = true
+  }
+  
   labels = var.labels
 }
 
@@ -45,6 +49,10 @@ resource "google_dataplex_zone" "curated_zone" {
   
   resource_spec {
     location_type = "SINGLE_REGION"
+  }
+  
+  discovery_spec {
+    enabled = true
   }
   
   labels = var.labels
@@ -65,6 +73,10 @@ resource "google_dataplex_zone" "consumption_zone" {
     location_type = "SINGLE_REGION"
   }
   
+  discovery_spec {
+    enabled = true
+  }
+  
   labels = var.labels
 }
 
@@ -81,6 +93,10 @@ resource "google_dataplex_asset" "raw_data_asset" {
   resource_spec {
     name = "projects/${var.project_id}/buckets/${var.raw_data_bucket_name}"
     type = "STORAGE_BUCKET"
+  }
+  
+  discovery_spec {
+    enabled = true
   }
   
   labels = var.labels
@@ -101,6 +117,10 @@ resource "google_dataplex_asset" "curated_dataset_asset" {
     type = "BIGQUERY_DATASET"
   }
   
+  discovery_spec {
+    enabled = true
+  }
+  
   labels = var.labels
 }
 
@@ -117,6 +137,10 @@ resource "google_dataplex_asset" "marts_dataset_asset" {
   resource_spec {
     name = "projects/${var.project_id}/datasets/marts"
     type = "BIGQUERY_DATASET"
+  }
+  
+  discovery_spec {
+    enabled = true
   }
   
   labels = var.labels

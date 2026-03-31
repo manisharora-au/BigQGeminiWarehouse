@@ -56,6 +56,7 @@ resource "google_bigquery_dataset" "governance" {
 resource "google_bigquery_table" "validation_log" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "validation_log"
+  deletion_protection = false
 
   schema = jsonencode([
     {
@@ -107,6 +108,7 @@ resource "google_bigquery_table" "validation_log" {
 resource "google_bigquery_table" "quality_failures" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "quality_failures"
+  deletion_protection = false
 
   schema = jsonencode([
     {
@@ -148,6 +150,7 @@ resource "google_bigquery_table" "quality_failures" {
 resource "google_bigquery_table" "ingestion_log" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "ingestion_log"
+  deletion_protection = false
 
   schema = jsonencode([
     {
@@ -209,6 +212,7 @@ resource "google_bigquery_table" "ingestion_log" {
 resource "google_bigquery_table" "ai_insights" {
   dataset_id = google_bigquery_dataset.governance.dataset_id
   table_id   = "ai_insights"
+  deletion_protection = false
 
   schema = jsonencode([
     {

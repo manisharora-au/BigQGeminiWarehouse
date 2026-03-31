@@ -3,9 +3,17 @@
 # Description: Service accounts with least-privilege IAM roles
 # ==============================================================================
 
+locals {
+  # Create shortened prefix using substring to fit 30-char SA limit
+  # Extract first 4 chars from org + first 4 from project = 8 chars + suffixes
+  org_short = substr(split("-", var.name_prefix)[0], 0, 4)    # "inte" from "intelia"
+  proj_short = substr(split("-", var.name_prefix)[1], 0, 4)   # "hack" from "hackathon"
+  sa_prefix = "${local.org_short}-${local.proj_short}"        # "inte-hack"
+}
+
 # Service Account: Cloud Functions File Router
 resource "google_service_account" "cloudfunction_router" {
-  account_id   = "${var.name_prefix}-cf-router"
+  account_id   = "${local.sa_prefix}-cf-router"
   # the account_id will look like intelia-hackathon-dev-cf-router
   display_name = "Cloud Function File Router"
   description  = "Service account for Cloud Function that routes files from inbox to raw folders"
@@ -38,7 +46,7 @@ resource "google_project_iam_member" "cloudfunction_router_roles" {
 
 # Service Account: Cloud Run Validator
 resource "google_service_account" "cloudrun_validator" {
-  account_id   = "${var.name_prefix}-cr-validator"
+  account_id   = "${local.sa_prefix}-cr-validator"
   display_name = "Cloud Run Validator"
   description  = "Service account for Cloud Run validator service"
   project      = var.project_id
@@ -61,7 +69,7 @@ resource "google_project_iam_member" "cloudrun_validator_roles" {
 
 # Service Account: Cloud Run Orchestrator (Pipeline Coordinator Agent)
 resource "google_service_account" "cloudrun_orchestrator" {
-  account_id   = "${var.name_prefix}-cr-orchestrator"
+  account_id   = "${local.sa_prefix}-cr-orchestrator"
   display_name = "Cloud Run Pipeline Orchestrator"
   description  = "Service account for Google ADK Pipeline Coordinator Agent"
   project      = var.project_id
@@ -85,7 +93,7 @@ resource "google_project_iam_member" "cloudrun_orchestrator_roles" {
 
 # Service Account: Dataform
 resource "google_service_account" "dataform" {
-  account_id   = "${var.name_prefix}-dataform"
+  account_id   = "${local.sa_prefix}-dataform"
   display_name = "Dataform Service Account"
   description  = "Service account for Dataform transformations"
   project      = var.project_id
@@ -106,7 +114,7 @@ resource "google_project_iam_member" "dataform_roles" {
 
 # Service Account: Vertex AI (for Conversational Analytics Agent)
 resource "google_service_account" "vertexai" {
-  account_id   = "${var.name_prefix}-vertexai"
+  account_id   = "${local.sa_prefix}-vertexai"
   display_name = "Vertex AI Analytics Agent"
   description  = "Service account for Google ADK Conversational Analytics Agent"
   project      = var.project_id
@@ -127,7 +135,7 @@ resource "google_project_iam_member" "vertexai_roles" {
 
 # Service Account: Looker Studio (for dashboard access)
 resource "google_service_account" "looker" {
-  account_id   = "${var.name_prefix}-looker"
+  account_id   = "${local.sa_prefix}-looker"
   display_name = "Looker Studio Service Account"
   description  = "Service account for Looker Studio dashboard connections"
   project      = var.project_id
@@ -146,7 +154,7 @@ resource "google_project_iam_member" "looker_roles" {
 
 # Service Account: Cloud Build (for CI/CD pipeline)
 resource "google_service_account" "cloudbuild" {
-  account_id   = "${var.name_prefix}-cloudbuild"
+  account_id   = "${local.sa_prefix}-cloudbuild"
   display_name = "Cloud Build Service Account"
   description  = "Service account for Cloud Build CI/CD pipeline"
   project      = var.project_id

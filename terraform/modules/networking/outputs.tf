@@ -14,5 +14,5 @@ output "escalation_alerts_topic" {
 
 output "vpc_sc_perimeter" {
   description = "VPC Service Controls perimeter (if enabled)"
-  value       = var.enable_vpc_sc ? google_access_context_manager_service_perimeter.data_perimeter[0].name : null
+  value       = var.enable_vpc_sc ? "vpc-sc-commented-out-pending-org-access" : null
 }

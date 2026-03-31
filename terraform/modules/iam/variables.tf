@@ -13,6 +13,12 @@ variable "name_prefix" {
   description = "Naming prefix for all resources (org-project-env)"
 }
 
+variable "service_account_prefix" {
+  type        = string
+  description = "Shortened prefix for service account names (max 30 chars total)"
+  default     = null
+}
+
 variable "labels" {
   type        = map(string)
   description = "Labels to apply to all resources"
