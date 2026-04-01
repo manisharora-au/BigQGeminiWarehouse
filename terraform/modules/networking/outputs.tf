@@ -8,8 +8,8 @@ output "pipeline_coordinator_topic" {
 }
 
 output "escalation_alerts_topic" {
-  description = "Pub/Sub topic for escalation alerts"
-  value       = google_pubsub_topic.escalation_alerts.name
+  description = "Pub/Sub topic for escalation alerts (full resource path for notification channels)"
+  value       = google_pubsub_topic.escalation_alerts.id
 }
 
 output "vpc_sc_perimeter" {
