@@ -1,21 +1,15 @@
 # ==============================================================================
-# Module: Monitoring Outputs
+# Module: Monitoring Outputs (Simplified)
 # ==============================================================================
 
 output "log_metrics" {
   description = "List of created log-based metrics"
-  value = [
-    google_logging_metric.validator_errors.name,
-    google_logging_metric.pipeline_failures.name
-  ]
+  value = []
 }
 
 output "alert_policies" {
   description = "List of alert policy IDs"
-  value = [
-    google_monitoring_alert_policy.validator_error_alert.id,
-    google_monitoring_alert_policy.pipeline_failure_alert.id
-  ]
+  value = []
 }
 
 output "notification_channels" {
