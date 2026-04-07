@@ -5,7 +5,7 @@ Handles extraction of metadata from various filename patterns for the data pipel
 This module provides methods to parse different file naming conventions and extract
 relevant metadata for downstream processing.
 
-Author: Manish Arora
+Author: Generated with Claude Code
 Version: 1.0
 """
 
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 SUPPORTED_ENTITIES = {'customers', 'orders', 'order_items', 'products'}
 
+
 class FileMetadataExtractor:
     """
     Handles extraction of metadata from various filename patterns.
@@ -31,7 +32,7 @@ class FileMetadataExtractor:
     @staticmethod
     def extract_file_metadata(filename: str) -> Dict[str, Optional[str]]:
         """
-        Extract metadata from filename patterns for the simplified architecture.
+        Extract metadata from filename patterns.
         
         Supported patterns:
         1. Full snapshot: {entity}_{YYYYMMDD}.csv
@@ -42,6 +43,7 @@ class FileMetadataExtractor:
             
         Returns:
             Dict[str, Optional[str]]: Dictionary containing extracted metadata:
+            Optional[str] is used because the output argument may or not be present based on the file name.
                 - entity_type: Type of data entity (customers, orders, etc.)
                 - load_type: Type of load operation (full or delta)  
                 - batch_id: Batch identifier for delta files
@@ -55,7 +57,7 @@ class FileMetadataExtractor:
             >>> extract_file_metadata("batch_01_customers_delta.csv")
             {'entity_type': 'customers', 'load_type': 'delta', 'batch_id': 'batch_001', ...}
         """
-        # Create a dictionary to store the extracted metadata
+        #  Create a dictionary to store the extracted metadata
         metadata = {
             'entity_type': None,
             'load_type': None,
@@ -66,14 +68,14 @@ class FileMetadataExtractor:
         
         # Remove .csv extension for pattern matching
         basename = filename.replace('.csv', '').lower()
-        logger.info(f"Extracting metadata from filename: {basename}")
+        logger.info(f"Basename: {basename}")
         
         # Pattern 1: Full snapshot files (entity_YYYYMMDD)
         full_pattern = r'^([a-z_]+)_(\d{8})$'
         full_match = re.match(full_pattern, basename)
         
         if full_match:
-            entity, date_str = full_match.groups()
+            entity, date_str = full_match.groups() # extract the entity and the date from the full_pattern
             if entity in SUPPORTED_ENTITIES:
                 metadata.update({
                     'entity_type': entity,
@@ -89,13 +91,14 @@ class FileMetadataExtractor:
         
         if delta_match:
             batch_num, entity = delta_match.groups()
+            # batch_num looks like 01, 02 etc
             if entity in SUPPORTED_ENTITIES:
                 # Use current date for delta files since they don't contain date
                 current_date = datetime.now(timezone.utc).strftime('%Y%m%d')
                 metadata.update({
                     'entity_type': entity,
                     'load_type': 'delta',
-                    'batch_id': f'batch_{batch_num.zfill(3)}',  # batch_001, batch_002 etc
+                    'batch_id': f'batch_{batch_num.zfill(3)}', # batch_id looks like batch_001, batch_002 etc padded with zeros
                     'file_date': current_date
                 })
                 logger.info(f"Matched delta pattern: entity={entity}, batch={batch_num}")
@@ -103,26 +106,3 @@ class FileMetadataExtractor:
         
         logger.warning(f"No matching pattern found for filename: {filename}")
         return metadata
-
-    @staticmethod
-    def validate_entity_type(entity_type: str) -> bool:
-        """
-        Validate if the extracted entity type is supported.
-        
-        Args:
-            entity_type (str): The entity type to validate
-            
-        Returns:
-            bool: True if entity type is supported, False otherwise
-        """
-        return entity_type in SUPPORTED_ENTITIES
-
-    @staticmethod 
-    def get_supported_entities() -> set:
-        """
-        Get the set of supported entity types.
-        
-        Returns:
-            set: Set of supported entity type strings
-        """
-        return SUPPORTED_ENTITIES.copy()

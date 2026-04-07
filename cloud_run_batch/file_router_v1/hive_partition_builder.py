@@ -1,12 +1,12 @@
 """
 Hive Partition Builder Module
 
-Builds hive-style partition paths for data organization in the validated/ layer only.
+Builds hive-style partition paths for data organization in the data pipeline.
 This module handles the creation of partitioned directory structures following
-hive conventions for efficient BigQuery querying.
+hive conventions for efficient data querying.
 
-Author: Manish Arora
-Version: 2.0
+Author: Generated with Claude Code
+Version: 1.0
 """
 
 import logging
@@ -18,20 +18,19 @@ logger = logging.getLogger(__name__)
 
 class HivePartitionBuilder:
     """
-    Builds hive-style partition paths for the validated/ layer.
+    Builds hive-style partition paths for data organization.
     
     This class handles the creation of partitioned directory structures
-    following hive conventions for efficient data querying. Partitioning
-    is only applied when files are moved to the validated/ layer.
+    following hive conventions for efficient data querying.
     """
 
     @staticmethod
-    def build_validated_destination_path(metadata: Dict[str, Optional[str]]) -> Optional[str]:
+    def build_destination_path(metadata: Dict[str, Optional[str]]) -> Optional[str]:
         """
-        Build hive-partitioned destination path for the validated/ layer.
+        Build hive-partitioned destination path.
         
         Creates directory structure following hive partitioning conventions:
-        validated/load_type={load_type}/entity_type={entity}/date={YYYY-MM-DD}/
+        load_type={load_type}/entity_type={entity}/date={YYYY-MM-DD}/
         
         Args:
             metadata (Dict[str, Optional[str]]): File metadata containing:
@@ -43,79 +42,58 @@ class HivePartitionBuilder:
             Optional[str]: Hive-partitioned path string or None if metadata incomplete
             
         Example:
-            >>> build_validated_destination_path({
+            >>> build_destination_path({
             ...     'entity_type': 'customers', 
             ...     'load_type': 'full', 
             ...     'file_date': '20260101'
             ... })
-            'validated/load_type=full/entity_type=customers/date=2026-01-01/'
+            'load_type=full/entity_type=customers/date=2026-01-01/'
         """
         entity = metadata.get('entity_type')
         load_type = metadata.get('load_type')
         file_date = metadata.get('file_date')
         
-        # Validate required metadata is present
+        # If arguments are missing then return None
         if not all([entity, load_type, file_date]):
             logger.error(f"Incomplete metadata for path building: {metadata}")
             return None
         
-        # Validate and convert date (YYYYMMDD format to YYYY-MM-DD)
+        # Validate date (YYYYMMDD format)
         try:
             if len(file_date) != 8 or not file_date.isdigit():
                 raise ValueError(f"Invalid date format: {file_date}")
 
-            logger.debug(f"Date format is valid: {file_date}")    
+            logger.info(f"Date format is valid: {file_date}")    
             
             # Parse date components for validation
             year = file_date[:4]
             month = file_date[4:6]
             day = file_date[6:8]
             
-            # Validate date components
+            # Validate date components: Date should be between 1 and 31 and month between 1 and 12
             if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
                 raise ValueError(f"Invalid month/day values: month={month}, day={day}")
             
-            logger.debug(f"Date components are valid: year={year}, month={month}, day={day}")    
+            logger.info(f"Date components are valid: year={year}, month={month}, day={day}")    
                 
         except (IndexError, ValueError) as e:
             logger.error(f"Date parsing error: {e}")
             return None
         
-        # Build hive partitioned path with ISO date format for validated/ layer
+        # Build hive partitioned path with ISO date format
         iso_date = f"{year}-{month}-{day}"
-        destination = f"validated/load_type={load_type}/entity_type={entity}/date={iso_date}/"
-        
-        logger.info(f"Built validated destination path: {destination}")
+        destination = f"load_type={load_type}/entity_type={entity}/date={iso_date}/"
+        #  destination would look like load_type=full/entity_type=customers/date=2026-01-01/
+
+        logger.info(f"Built destination path: {destination}")
         return destination
 
     @staticmethod
-    def build_quarantine_destination_path(filename: str) -> str:
+    def generate_destination_filename(metadata: Dict[str, Optional[str]]) -> str:
         """
-        Build destination path for quarantined files (flat structure).
+        Generate simplified destination filename.
         
-        Quarantined files are stored in a flat structure without partitioning
-        to simplify manual review and reprocessing.
-        
-        Args:
-            filename (str): Original filename
-            
-        Returns:
-            str: Quarantine destination path
-            
-        Example:
-            >>> build_quarantine_destination_path("customers_20260101.csv")
-            'quarantine/customers_20260101.csv'
-        """
-        quarantine_path = f"quarantine/{filename}"
-        logger.info(f"Built quarantine destination path: {quarantine_path}")
-        return quarantine_path
-
-    @staticmethod
-    def generate_validated_filename(metadata: Dict[str, Optional[str]]) -> str:
-        """
-        Generate clean destination filename for validated files.
-        
-        Creates standardized filenames following simple conventions:
+        Creates clean, readable filenames following simple conventions:
         - Full files: {entity}_full_{YYYY-MM-DD}.csv
         - Delta files: {entity}_delta_{batch_id}_{YYYY-MM-DD}.csv
         
@@ -131,7 +109,7 @@ class HivePartitionBuilder:
             
         Example:
             >>> # Full file
-            >>> generate_validated_filename({
+            >>> generate_destination_filename({
             ...     'entity_type': 'customers', 
             ...     'load_type': 'full',
             ...     'file_date': '20260101'
@@ -139,7 +117,7 @@ class HivePartitionBuilder:
             'customers_full_2026-01-01.csv'
             
             >>> # Delta file
-            >>> generate_validated_filename({
+            >>> generate_destination_filename({
             ...     'entity_type': 'customers', 
             ...     'load_type': 'delta',
             ...     'batch_id': 'batch_001',
@@ -166,37 +144,5 @@ class HivePartitionBuilder:
             # Fallback for unexpected load types
             filename = f"{entity}_{load_type}_{iso_date}.csv"
         
-        logger.info(f"Generated validated filename: {filename}")
+        logger.info(f"Generated destination filename: {filename}")
         return filename
-
-    @staticmethod
-    def extract_partition_info(validated_path: str) -> Optional[Dict[str, str]]:
-        """
-        Extract partition information from a validated path.
-        
-        Useful for debugging and governance logging to understand
-        what partitions were created.
-        
-        Args:
-            validated_path (str): Path in validated/ with hive partitions
-            
-        Returns:
-            Optional[Dict[str, str]]: Partition key-value pairs or None if invalid
-            
-        Example:
-            >>> extract_partition_info("validated/load_type=full/entity_type=customers/date=2026-01-01/")
-            {'load_type': 'full', 'entity_type': 'customers', 'date': '2026-01-01'}
-        """
-        import re
-        
-        # Extract partition key-value pairs using regex
-        partition_pattern = r'(\w+)=([^/]+)'
-        matches = re.findall(partition_pattern, validated_path)
-        
-        if not matches:
-            logger.warning(f"No partition information found in path: {validated_path}")
-            return None
-            
-        partition_info = dict(matches)
-        logger.debug(f"Extracted partition info: {partition_info}")
-        return partition_info

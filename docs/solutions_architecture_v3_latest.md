@@ -20,7 +20,7 @@
 4. [Infrastructure &amp; Automation](#4-infrastructure--automation)
 5. [Data Ingestion &amp; Raw Layer](#5-data-ingestion--raw-layer)
    - 5.1 Cloud Storage — The Landing Zone
-   - 5.2 Cloud Functions — The File Router
+   - 5.2 Queue Drainer & Cloud Run Validator — Batch Ingestion & Validation
    - 5.3 Cloud Run Validator — The Validation Gate
    - 5.4 The Validation Log
    - 5.5 Alerting on Failure
@@ -62,7 +62,135 @@ This platform organises data into three progressive layers. Each layer has a dis
 
 #### 2.1.1 Layer 1 — Raw: exact replica of the source
 
-The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. That file landing fires a GCS Object Finalised event, which triggers the Queue Drainer Cloud Function automatically. The Queue Drainer pulls the event from the Pub/Sub subscription, groups it with any other files waiting in the queue, and submits a batch payload to the File Router via Cloud Tasks. The File Router — a Cloud Run Batch Job — picks up the payload, identifies the entity type and load type from each file name, and moves each file to the correct hive-partitioned path under `raw/` — for example `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. That write to `raw/` fires a second Object Finalised event, which Eventarc picks up and uses to trigger the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
+The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. That file landing fires a GCS Object Finalised event. GCS publishes this event directly to a Pub/Sub topic via a native GCS Pub/Sub notification — no Eventarc is involved in this step. The Queue Drainer Cloud Function pulls the message from the Pub/Sub subscription, groups it with any other files waiting in the queue, and submits a batch payload to the Cloud Run Validator via Cloud Tasks. The Validator reads each file name to identify the entity type and load type, then runs the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
+
+The sequence below shows the complete event chain from file arrival to validated data being available for transformation:
+
+```
+Source
+  │
+  │  drops CSV file (no folder convention required)
+  ▼
+GCS inbox/
+  │
+  │  Object Finalised event fires automatically
+  │  GCS Pub/Sub Notification publishes JSON message directly to topic
+  │  (native GCS feature — no Eventarc required)
+  ▼
+Pub/Sub Topic (file-upload-events)
+  │
+  │  message waits in pull subscription queue
+  │  queue absorbs bursts — files can arrive at any rate
+  ▼
+Queue Drainer (Cloud Function)
+  │
+  │  triggered by Cloud Scheduler or message threshold
+  │  pulls up to 50 messages in a single call
+  │  groups them into one batch payload
+  │  submits payload asynchronously
+  ▼
+Cloud Tasks (file-processing-queue)
+  │
+  │  delivers payload with retry + dead-letter handling
+  ▼
+Cloud Run Validator (combined router + validator)
+  │
+  │  reads file name → identifies entity type and load type
+  │  reads header only → runs 8 schema contract checks
+  │  processes up to 10 files concurrently (asyncio)
+  │
+  ├── FAIL ──► quarantine/  +  validation_log FAIL record  +  Cloud Monitoring alert
+  │
+  └── PASS ──► validated/load_type=delta/entity_type=orders/date=2025-03-15/
+                 +  validation_log PASS record
+                 +  Pub/Sub PASS message → Pipeline Coordinator Agent
+```
+
+**What gets posted to Pub/Sub and how**
+
+When a file lands in `inbox/`, GCS fires an Object Finalised event. GCS has a native feature called a **Pub/Sub Notification** that publishes this event directly to a Pub/Sub topic without any intermediary. No Eventarc is involved — this is a direct GCS-to-Pub/Sub connection configured once in Terraform using a `google_storage_notification` resource:
+
+```hcl
+resource "google_storage_notification" "inbox_notification" {
+  bucket             = google_storage_bucket.platform.name
+  payload_format     = "JSON_API_V1"
+  topic              = google_pubsub_topic.file_upload_events.id
+  event_types        = ["OBJECT_FINALIZE"]
+  object_name_prefix = "inbox/"
+}
+```
+
+The `object_name_prefix = "inbox/"` filter ensures only files landing in `inbox/` trigger a notification — writes to `validated/`, `quarantine/`, or `archive/` do not produce messages on this topic.
+
+The message GCS publishes to the topic is a JSON payload containing the event data:
+
+```json
+{
+  "bucket": "intelia-hackathon-dev-raw-data",
+  "name": "inbox/orders_delta_20250315.csv",
+  "size": "245120",
+  "contentType": "text/csv",
+  "timeCreated": "2025-03-15T09:42:11Z",
+  "eventType": "OBJECT_FINALIZE"
+}
+```
+
+This message sits in the Pub/Sub topic waiting to be consumed. It is not processed immediately — this is the decoupling point. Files can arrive at any rate without immediately spawning compute. The queue absorbs bursts silently.
+
+**How the Queue Drainer consumes it**
+
+The Queue Drainer Cloud Function does not receive messages immediately as they arrive. Instead it operates on a Pub/Sub pull subscription — meaning it actively reaches into the topic and pulls messages at its own pace rather than having them pushed to it one by one. This distinction is what enables the batching behaviour.
+
+With a pull subscription, the Queue Drainer can pull up to 50 messages in a single call, accumulating all the file arrival events that have built up since the last pull, and package them together into one batch payload for the Cloud Run Validator. If it were a push subscription — where Pub/Sub delivers one message at a time by calling the Queue Drainer's endpoint — each message would trigger a separate invocation and the batching benefit would be lost entirely.
+
+The Queue Drainer is triggered either by Cloud Scheduler on a fixed cadence or when a message threshold is reached in the subscription. Once triggered it:
+
+1. Pulls up to 50 pending messages from the subscription in a single API call
+2. Extracts the file metadata — bucket, filename, timestamp — from each message payload
+3. Groups the messages into a single batch payload
+4. Submits that payload asynchronously to the Cloud Run Validator via Cloud Tasks
+5. Acknowledges the pulled messages so they are removed from the subscription queue
+
+Cloud Tasks then handles reliable delivery to the Cloud Run Validator, including automatic retry with exponential backoff and routing failed tasks to a dead-letter queue for manual inspection.
+
+**The batch payload submitted to Cloud Tasks**
+
+After pulling up to 50 messages from Pub/Sub, the Queue Drainer constructs a single JSON payload and submits it to Cloud Tasks as one task. The Cloud Run Validator receives this payload and processes each file in the `files` array concurrently. A realistic example where three files arrived in close succession — one full load and two deltas across different entities — would look like this:
+
+```json
+{
+  "batch_id": "batch-20250315-094211-a3f7",
+  "submitted_at": "2025-03-15T09:42:11Z",
+  "processing_mode": "event_driven",
+  "source_bucket": "intelia-hackathon-dev-raw-data",
+  "file_count": 3,
+  "files": [
+    {
+      "filename": "customers_20250101.csv",
+      "gcs_path": "inbox/customers_20250101.csv",
+      "size_bytes": 512400,
+      "content_type": "text/csv",
+      "arrived_at": "2025-03-15T09:40:02Z"
+    },
+    {
+      "filename": "orders_delta_20250315.csv",
+      "gcs_path": "inbox/orders_delta_20250315.csv",
+      "size_bytes": 245120,
+      "content_type": "text/csv",
+      "arrived_at": "2025-03-15T09:41:17Z"
+    },
+    {
+      "filename": "order_items_delta_20250315.csv",
+      "gcs_path": "inbox/order_items_delta_20250315.csv",
+      "size_bytes": 189034,
+      "content_type": "text/csv",
+      "arrived_at": "2025-03-15T09:41:55Z"
+    }
+  ]
+}
+```
+
+The `batch_id` gives every execution a unique traceable identifier that is written to `governance.validation_log` alongside each file's outcome — making it possible to query all files processed in the same batch run. The `processing_mode` field supports the three trigger modes: `event_driven` for normal operations, `scheduled` for fixed cadence runs, and `backfill` for manual on-demand scans. The Cloud Run Validator reads the `files` array and dispatches each entry to a worker — up to 10 concurrently — each worker independently reading the file header, running the 8 schema checks, and routing to `validated/` or `quarantine/`.
 
 Files that pass validation are moved to the `validated/` prefix and made available to BigQuery as **external tables**. The external tables point exclusively at the `validated/` prefix — they never read from `raw/`, `inbox/`, or any other area. An external table is a typed SQL lens over a file that stays in GCS — BigQuery can query it without physically copying the data. Only files that have cleared the validation gate are visible to BigQuery and therefore to Dataform. This is the enforcement point: no unvalidated data can enter the transformation layer.
 
@@ -80,7 +208,7 @@ Transformation from Raw to Curated happens in two sequential steps:
 
 Downstream models in the Consumption layer resolve the current state of an entity at query time using `ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY _loaded_at DESC) = 1` — selecting the most recently arrived record per entity before applying any business logic or joining to other entities. This keeps the Curated layer simple, stable, and safe to reprocess: because nothing is mutated, any pipeline run can be replayed from scratch without risk.
 
-Older records are culled on a defined schedule — delta records beyond a 90-day retention window are removed by a scheduled Dataform maintenance model. Full load records are retained for the lifetime of the project as the baseline.
+All records — full load and delta — are retained for the lifetime of the project. BigQuery's columnar storage is inexpensive and the curated tables are the authoritative history of everything that arrived. Deleting records introduces operational risk with no meaningful cost saving on this dataset.
 
 What the data looks like here: four append-only entity tables — `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items` — each containing all historical arrivals stamped with ingestion metadata. Clean types, consistent naming, no nulls on key fields. No joins, no derived columns, no business rules applied. This is the single source of truth from which the Consumption layer builds everything.
 
@@ -165,17 +293,16 @@ The table below gives a single-sentence orientation for every GCP service used i
 | **Infrastructure** | VPC Service Controls                         | Creates a security boundary around the platform so that data in BigQuery and Cloud Storage cannot be accessed from outside the project, even if credentials were compromised                                                                                                                                                                          |
 | **Infrastructure** | Private Google Access                        | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure                                                                                                                                                                                              |
 | **All layers**     | Dataplex                                     | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses                                                                                             |
-| **Raw**            | Google Cloud Storage                         | Stores all platform data across six prefixes:`inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/`                                                                                                                |
-| **Raw**            | Cloud Run Batch Job — Queue Drainer & File Router | A two-component system: Queue Drainer (Cloud Function) pulls Pub/Sub messages from GCS events and triggers File Router (Cloud Run batch job) via Cloud Tasks — processes multiple files concurrently with async operations, applies hive partitioning structure, and routes to `raw/load_type={type}/entity_type={entity}/date={date}/` |
-| **Raw**            | Eventarc                                     | Watches two GCS prefixes for Object Finalised events — fires on `inbox/` to trigger the File Router, and fires on `raw/` to trigger the Cloud Run Validator; both transitions are fully automatic with no polling or manual intervention                                                                                                         |
+| **Raw**            | Google Cloud Storage                         | Stores all platform data across five prefixes: `inbox/` where files land from the source, `validated/` for files that cleared the validation gate, `quarantine/` for files that failed, `archive/` for processed files, and `temp/` for working space — there is no intermediate `raw/` prefix                                                                                                                |
+| **Raw**            | Queue Drainer & Cloud Run Validator | Queue Drainer (Cloud Function) pulls Pub/Sub messages in batches and submits them to the Cloud Run Validator via Cloud Tasks — the Validator identifies entity type from the file name, runs 8 schema checks, and routes directly to `validated/load_type={type}/entity_type={entity}/date={date}/` or `quarantine/` |
+| **Raw**            | Eventarc                                     | No longer used for the `inbox/` trigger — a native GCS Pub/Sub Notification publishes Object Finalised events directly to the Pub/Sub topic without an intermediary; Eventarc is retained in the architecture for any future direct Cloud Run triggers that do not route through Pub/Sub                                                                                                         |
 | **Raw**            | Pub/Sub                                      | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives                                                                                                                                                    |
 | **Raw**            | Cloud Logging                                | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline                                                                                                                                                                                          |
-| **Raw**            | Cloud Run — Validator                       | Checks every incoming file against a known set of rules before anything else touches it — correct column names, correct structure, correct encoding; files that pass move forward, files that fail are isolated and an alert is raised (see Section 2.5 for how schema changes are handled)                                                          |
-| **Raw**            | BigQuery External Tables                     | Defined over the `validated/` prefix only — gives Dataform SQL access to files that have cleared the validation gate, while files in `raw/`, `inbox/`, and `quarantine/` remain invisible to BigQuery                                                                                                                                        |
+| **Raw**            | BigQuery External Tables                     | Defined over the `validated/` prefix only — gives Dataform SQL access to files that have cleared the validation gate, while files in `inbox/` and `quarantine/` remain invisible to BigQuery                                                                                                                                        |
 | **Raw**            | BigQuery (`governance` dataset)            | Records the outcome of every file validation and every data quality check, giving the CTO a full audit trail of what was accepted, what was rejected, and why                                                                                                                                                                                         |
 | **Curated**        | Google ADK — Pipeline Coordinator Agent     | An AI agent that decides what transformation work needs to run after a file is validated — it checks the current state of the pipeline, identifies what is affected, and handles failures by deciding whether to retry, isolate the problem, or raise an alert                                                                                       |
 | **Curated**        | Dataform                                     | Runs the data transformation steps in the correct order — cleaning, enriching, and conforming the raw data into trusted entity tables that the Consumption layer can rely on                                                                                                                                                                         |
-| **Curated**        | BigQuery (`curated` dataset)               | Stores cleaned and enriched versions of the four core entities — customers, products, orders, and order_items — retaining the full history of every record that has ever arrived, with records older than 90 days automatically removed                                                                                                             |
+| **Curated**        | BigQuery (`curated` dataset)               | Stores cleaned and typed versions of the four core entities — customers, products, orders, and order_items — retaining the full arrival history of every record for the lifetime of the project                                                                                                             |
 | **Consumption**    | BigQuery (`marts` dataset)                 | Stores the dimensional model — dimension tables for customers, products, and dates, a central orders fact table, and five summary tables tailored to the specific questions the CCO and CTO need answered                                                                                                                                            |
 | **Consumption**    | BigQuery ML                                  | Runs two AI tasks during the pipeline: scoring every customer with a churn risk probability, and generating a plain-English summary of each customer's profile using Gemini                                                                                                                                                                           |
 | **Consumption**    | BigQuery Data Agent                          | Allows the CCO and CTO to ask questions about the data in plain English directly from the BigQuery console and receive answers without writing any SQL                                                                                                                                                                                                |
@@ -344,7 +471,7 @@ Dataplex daily quality scans on the `curated.*` and `marts.*` datasets provide a
 
 **The reprocessing path for quarantined files**
 
-Every file moved to `quarantine/` is retained there for the full 365-day GCS retention window. Once the schema contract has been updated and redeployed, the quarantined file can be manually copied back to `inbox/` with its original file name, which re-triggers the File Router and the full Eventarc → Validator → Pipeline flow from the beginning. The file is re-validated against the updated contract. If it now passes, it proceeds through the pipeline as normal. The original quarantine record in `governance.validation_log` is preserved — it is never deleted or updated — providing a complete audit trail of the rejection, the resolution, and the reprocessing.
+Every file moved to `quarantine/` is retained there for the full 365-day GCS retention window. Once the schema contract has been updated and redeployed, the quarantined file can be manually copied back to `inbox/` with its original file name, which re-triggers the full Queue Drainer → Cloud Tasks → Validator → Pipeline flow from the beginning. The file is re-validated against the updated contract. If it now passes, it proceeds through the pipeline as normal. The original quarantine record in `governance.validation_log` is preserved — it is never deleted or updated — providing a complete audit trail of the rejection, the resolution, and the reprocessing.
 
 ---
 
@@ -366,7 +493,7 @@ Stage 1 — Terraform reads the infrastructure definitions and provisions every 
 
 Stage 2 — The Dataform transformation logic is deployed to BigQuery. All of the SQL models that clean, enrich, and organise the data are registered and ready to run. Nothing runs yet — this step just makes the models available.
 
-Stage 3 — The initial source CSV files are copied from the shared hackathon bucket directly into the `inbox/` prefix of the platform bucket. The Queue Drainer Cloud Function fires automatically, batches the events, and submits them to the File Router Batch Job via Cloud Tasks. The File Router moves each file into the correct hive-partitioned `raw/` path and triggers the validation and pipeline flow from there.
+Stage 3 — The initial source CSV files are copied from the shared hackathon bucket directly into the `inbox/` prefix of the platform bucket. The Queue Drainer Cloud Function fires automatically, batches the events, and submits them to the Cloud Run Validator via Cloud Tasks. The Validator routes each file directly to the correct hive-partitioned `validated/` path and triggers the pipeline flow from there.
 
 Stage 4 — The full data pipeline (described below) runs end to end for the first time. Every layer is processed in order: the files are validated, the data is cleaned and enriched, the dimensional model is built, and the persona dashboards become live.
 
@@ -378,11 +505,11 @@ The entire sequence — from an empty project to a working data warehouse — co
 
 This pipeline runs continuously during normal operations. It is event-driven, meaning it starts automatically the moment a new data file arrives — there is no schedule and no manual trigger. It has two modes depending on whether a single entity file has arrived (delta mode) or the entire dataset needs to be rebuilt (full refresh mode).
 
-**Services involved:** Google Cloud Storage, Eventarc, Cloud Run (Validator), Google ADK Pipeline Coordinator Agent, Dataform, BigQuery, BigQuery ML, Google ADK Insight Generation Agent, Dataplex, Cloud Monitoring
+**Services involved:** Google Cloud Storage, GCS Pub/Sub Notification, Pub/Sub, Cloud Tasks, Cloud Run (Validator), Google ADK Pipeline Coordinator Agent, Dataform, BigQuery, BigQuery ML, Google ADK Insight Generation Agent, Dataplex, Cloud Monitoring
 
 **Delta mode — what happens when a new file arrives:**
 
-A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. This landing fires a GCS Object Finalised event, which triggers the Queue Drainer Cloud Function. The Queue Drainer pulls the message from Pub/Sub, batches it with any other queued files, and submits a payload to the File Router Batch Job via Cloud Tasks. The File Router identifies the entity type and load type from the file name and moves the file to the correct hive-partitioned path — for example `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. That write fires a second Object Finalised event, which Eventarc picks up and uses to trigger the Cloud Run Validator. If the file passes validation, the Validator mirrors the same partition path when promoting the file to `validated/` — for example `validated/load_type=delta/entity_type=orders/date=2025-03-15/`. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
+A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. This landing fires a GCS Object Finalised event, which GCS publishes directly to Pub/Sub via a native GCS Pub/Sub Notification — no Eventarc involved. The Queue Drainer pulls the message from Pub/Sub, batches it with any other queued files, and submits a payload to the Cloud Run Validator via Cloud Tasks. The Validator reads the file name to identify the entity type and load type, runs the 8 schema checks, and on PASS copies the file directly to `validated/load_type=delta/entity_type=orders/date=2025-03-15/` — one move, no intermediate `raw/` hop. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
 
 The Pipeline Coordinator Agent checks what has already run, determines which transformation steps are affected by this particular file, and instructs Dataform to run those steps — and only those steps — in the correct order. Dataform cleans and enriches the data and writes it to the curated tables. Data quality checks run automatically as part of this process. If all checks pass, BigQuery ML runs to refresh the AI-generated columns in the affected mart tables. Dataplex then runs a quality scan across the updated tables. The end-to-end time from file arrival to updated dashboards is under five minutes.
 
@@ -451,124 +578,84 @@ This is the platform's own bucket, provisioned by Terraform and owned entirely b
 | Path                                                                                           | Purpose                                                                                       |
 | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `gs://intelia-hackathon-dev-raw-data/inbox/`                                                 | Files land here first — the source drops files with no folder convention required            |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=customers/date=YYYY-MM-DD/` | Full customer extracts — hive partition structure applied by the File Router Batch Job |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=customers/date=YYYY-MM-DD/` | Delta customer files — one dated subfolder per batch drop |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=products/date=YYYY-MM-DD/` | Full product extracts |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=products/date=YYYY-MM-DD/` | Delta product files |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=orders/date=YYYY-MM-DD/` | Full order extracts |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=orders/date=YYYY-MM-DD/` | Delta order files |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=order_items/date=YYYY-MM-DD/` | Full order item extracts |
-| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=order_items/date=YYYY-MM-DD/` | Delta order item files |
-| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/`                    | Validated full customer extracts — Validator mirrors partition path from raw/ on promotion |
-| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=YYYY-MM-DD/`   | Validated delta customer files — one dated subfolder per successful drop                     |
-| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=full/`                     | Validated full product extracts                                                               |
-| `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=delta/date=YYYY-MM-DD/`    | Validated delta product files                                                                 |
-| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=full/`                       | Validated full order extracts                                                                 |
-| `gs://intelia-hackathon-dev-raw-data/validated/orders/load_type=delta/date=YYYY-MM-DD/`      | Validated delta order files                                                                   |
-| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=full/`                  | Validated full order item extracts                                                            |
-| `gs://intelia-hackathon-dev-raw-data/validated/order_items/load_type=delta/date=YYYY-MM-DD/` | Validated delta order item files                                                              |
-| `gs://intelia-hackathon-dev-raw-data/validated/`                                             | Files that passed all validation checks — cleared for processing                             |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=full/entity_type=customers/date=YYYY-MM-DD/` | Validated full customer extracts — partition structure applied by the Validator on promotion from inbox/ |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=delta/entity_type=customers/date=YYYY-MM-DD/` | Validated delta customer files — one dated subfolder per successful drop |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=full/entity_type=products/date=YYYY-MM-DD/` | Validated full product extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=delta/entity_type=products/date=YYYY-MM-DD/` | Validated delta product files |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=full/entity_type=orders/date=YYYY-MM-DD/` | Validated full order extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=delta/entity_type=orders/date=YYYY-MM-DD/` | Validated delta order files |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=full/entity_type=order_items/date=YYYY-MM-DD/` | Validated full order item extracts |
+| `gs://intelia-hackathon-dev-raw-data/validated/load_type=delta/entity_type=order_items/date=YYYY-MM-DD/` | Validated delta order item files |
+| `gs://intelia-hackathon-dev-raw-data/validated/`                                             | Files that passed all validation checks — cleared for processing; partitioned by load_type, entity_type, and date |
 | `gs://intelia-hackathon-dev-raw-data/quarantine/`                                            | Files that failed a check — held for manual review                                           |
 | `gs://intelia-hackathon-dev-raw-data/archive/`                                               | Validated files moved here after processing completes                                         |
 | `gs://intelia-hackathon-dev-raw-data/temp/`                                                  | Temporary working space for Cloud Run jobs                                                    |
 
-The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The Queue Drainer and File Router Batch Job together are the only processes permitted to move files from `inbox/` to `raw/`. The validator is the only process permitted to move files from `raw/` to `validated/` or `quarantine/`. No other service has write access to any of those prefixes. This two-step routing ensures that files are both correctly structured and validated before they can reach the transformation layer.
+The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The Cloud Run Validator is the only process permitted to move files from `inbox/` to `validated/` or `quarantine/`. No other service has write access to those prefixes. This single-step routing ensures that every file is validated before it can reach the transformation layer.
 
-Files in `raw/` are kept for 365 days and cannot be deleted within that window. After 30 days they move to cheaper nearline storage, and after 90 days to coldline storage — preserving the full history without the cost of keeping everything in hot storage indefinitely.
+Files in `inbox/` are retained for 30 days before moving to nearline storage — they are the source record of what arrived. Files in `validated/` are kept for 365 days and cannot be deleted within that window. After 30 days they move to nearline storage and after 90 days to coldline storage — preserving the full validated history without the cost of keeping everything in hot storage indefinitely.
 
 ---
 
-### 5.2 Cloud Run Batch Job — Queue Drainer & File Router
+### 5.2 Queue Drainer & Cloud Run Validator — Batch Ingestion & Validation
 
-The file routing system has been redesigned as a microservices architecture with separated queue management and file processing components. This provides better scalability, fault isolation, and cost optimization compared to the original single Cloud Function approach.
+The ingestion and validation pipeline uses two components: a lightweight Queue Drainer Cloud Function that batches file arrival events, and the Cloud Run Validator which receives the batch, validates each file, and routes it directly from `inbox/` to `validated/` or `quarantine/` in a single move. There is no intermediate `raw/` prefix — the file moves once and only once.
 
-**Architecture Components**
+This design retains the batching efficiency of Cloud Tasks while eliminating the File Router as a separate component and the `raw/` hop that came with it. The Cloud Run Validator absorbs the routing logic — it already reads the file name to look up the correct schema contract, so deriving the destination partition path adds no meaningful complexity.
 
-**Component 1: Queue Drainer (Cloud Function)**
-- **Purpose**: Lightweight event processing and job orchestration
-- **Trigger**: GCS Object Finalised event when files land in `inbox/`
-- **Technology**: Cloud Function (2nd gen) with minimal resource requirements
-- **Responsibilities**:
-  - Pull messages from Pub/Sub subscription in batches (up to 50 files)
-  - Extract file metadata from Cloud Storage events
-  - Group files into logical processing batches
-  - Trigger Cloud Run batch jobs via Cloud Tasks
-  - Handle message acknowledgments and error routing
+**Component 1 — Queue Drainer (Cloud Function)**
 
-**Component 2: File Router (Cloud Run Batch Job)**
-- **Purpose**: Heavy-duty file processing with concurrent execution
-- **Trigger**: Cloud Tasks messages from Queue Drainer
-- **Technology**: Cloud Run batch job with configurable resources
-- **Responsibilities**:
-  - Process batches of files received via Cloud Tasks payload
-  - Concurrent file operations using asyncio (default: 10 workers)
-  - Apply hive partitioning structure: `load_type={type}/entity_type={entity}/date={date}/`
-  - Route files to appropriate `raw/` destinations
-  - Generate processing statistics and governance logs
+The Queue Drainer is a lightweight Cloud Function triggered by Cloud Scheduler or a Pub/Sub message threshold. It does not process files — it only manages the queue.
 
-**Communication Layer: Cloud Tasks**
-- **Benefits**: Reliable delivery, retry logic, dead letter queues
-- **Payload**: JSON containing file batch information and processing mode
-- **Rate Control**: Configurable to prevent resource saturation
+When triggered it:
+1. Pulls up to 50 pending messages from the Pub/Sub pull subscription in a single API call
+2. Extracts file metadata — bucket, filename, timestamp — from each message payload
+3. Groups the messages into a single batch payload
+4. Submits that payload asynchronously to the Cloud Run Validator via Cloud Tasks
+5. Acknowledges the pulled messages so they are removed from the subscription queue
 
-**How it determines the entity type**
+**Component 2 — Cloud Run Validator (combined router + validator)**
 
-The File Router reads file names and matches them against known patterns:
+The Cloud Run Validator receives the batch payload from Cloud Tasks and processes each file concurrently using asyncio (default: 10 workers). For each file it:
 
-| File name pattern     | Entity      | Load Type | Destination Pattern |
-| --------------------- | ----------- | --------- | ------------------- |
-| `customers_YYYYMMDD.csv` | customers | full | `load_type=full/entity_type=customers/date=YYYY-MM-DD/` |
-| `batch_XX_customers_delta.csv` | customers | delta | `load_type=delta/entity_type=customers/date=YYYY-MM-DD/` |
-| `products_YYYYMMDD.csv` | products | full | `load_type=full/entity_type=products/date=YYYY-MM-DD/` |
-| `batch_XX_products_delta.csv` | products | delta | `load_type=delta/entity_type=products/date=YYYY-MM-DD/` |
+1. Reads the file name and matches it against known naming patterns to identify entity type and load type:
 
-Unrecognized files are moved to `quarantine/inbox_unrecognised/` with structured logging.
+| File name pattern | Entity | Load type |
+|---|---|---|
+| `customers_YYYYMMDD.csv` | customers | full |
+| `customers_delta_YYYYMMDD.csv` | customers | delta |
+| `products_YYYYMMDD.csv` | products | full |
+| `products_delta_YYYYMMDD.csv` | products | delta |
+| `orders_YYYYMMDD.csv` | orders | full |
+| `orders_delta_YYYYMMDD.csv` | orders | delta |
+| `order_items_YYYYMMDD.csv` | order_items | full |
+| `order_items_delta_YYYYMMDD.csv` | order_items | delta |
 
-**File Processing Pipeline**
+2. Reads the file header only — no full file scan
+3. Runs the 8 schema contract checks (see Section 5.3)
+4. Routes the file based on outcome:
 
-1. **Metadata Extraction**: Parse filename for entity type, load type, and date
-2. **Hive Partition Building**: Generate destination paths with proper partition structure
-3. **Async File Operations**: 
-   - Copy files to partitioned `raw/` destinations
-   - Archive originals to `archive/` folder
-   - Generate clean, standardized filenames
-4. **Governance Logging**: Record all operations for audit and monitoring
+**On PASS:** copies the file from `inbox/` directly to the hive-partitioned `validated/` path — for example `validated/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv` — writes a PASS record to `governance.validation_log`, and publishes a Pub/Sub message to notify the Pipeline Coordinator Agent.
 
-**Destination File Structure**
+**On FAIL:** copies the file to `quarantine/`, writes a FAIL record to `governance.validation_log` with the failing check name and expected versus actual values, and writes an ERROR entry to Cloud Logging which triggers a Cloud Monitoring alert.
 
-Files are routed to hive-partitioned destinations:
-```
-raw/
-├── load_type=full/
-│   ├── entity_type=customers/
-│   │   └── date=2026-01-01/
-│   │       └── customers_full_2026-01-01.csv
-│   └── entity_type=products/
-│       └── date=2026-01-01/
-│           └── products_full_2026-01-01.csv
-└── load_type=delta/
-    ├── entity_type=customers/
-    │   └── date=2026-01-15/
-    │       └── customers_delta_batch_001_2026-01-15.csv
-    └── entity_type=orders/
-        └── date=2026-01-15/
-            └── orders_delta_batch_002_2026-01-15.csv
-```
+Unrecognised files — those not matching any known pattern — are moved to `quarantine/inbox_unrecognised/` with a structured log entry.
 
-**Scalability Benefits**
+**Communication Layer — Cloud Tasks**
 
-- **Concurrent Processing**: Batch job handles 10+ files simultaneously
-- **No Timeout Limits**: Cloud Run jobs can process large batches without 9-minute function limits
-- **Cost Efficiency**: Only runs when there's work to do, processes multiple files per execution
-- **Fault Isolation**: Queue drainer failures don't affect file processing logic
-- **Independent Scaling**: Components scale based on their specific resource requirements
+Cloud Tasks sits between the Queue Drainer and the Cloud Run Validator, providing reliable async delivery with:
+- Automatic retry with exponential backoff on failure
+- Dead-letter queue for tasks that exhaust all retries
+- Configurable rate control to prevent resource saturation
+- JSON payload containing the file batch and processing mode
 
-**Error Handling**
+**Trigger Modes**
 
-- **Individual File Failures**: Don't stop batch processing
-- **Retry Logic**: Cloud Tasks provides automatic retry with exponential backoff
-- **Dead Letter Queues**: Failed tasks routed for manual inspection
-- **Structured Logging**: All failures captured with detailed context for debugging
+| Mode | Trigger | Use case |
+|---|---|---|
+| Event-driven | Cloud Scheduler or Pub/Sub message threshold | Normal delta operations |
+| Scheduled | Cloud Scheduler at fixed cadence | Predictable batch windows |
+| On-demand | Manual execution via Cloud Console or CLI | Backfill operations |
 
 **Environment Configuration**
 
@@ -578,24 +665,15 @@ PUBSUB_SUBSCRIPTION=file-upload-events-sub
 BATCH_SIZE=50
 CLOUD_TASKS_QUEUE=file-processing-queue
 
-# File Router Batch Job
+# Cloud Run Validator
 MAX_WORKERS=10
-PROCESSOR_VERSION=2.0
-MANUAL_BUCKET_SCAN=bucket-name  # Optional for backfill operations
 ```
-
-**Trigger Modes**
-
-- **Event-Driven**: Normal operation via GCS events → Pub/Sub → Queue Drainer → Cloud Tasks → File Router
-- **Scheduled**: Cloud Scheduler can trigger batch processing at fixed intervals
-- **Manual**: Direct bucket scan mode for backfill operations
-- **On-Demand**: Manual execution via Cloud Console or CLI
 
 ---
 
 ### 5.3 Cloud Run Validator — The Validation Gate
 
-The Cloud Run Validator is a lightweight Python service deployed to Cloud Run. It is triggered by Eventarc when a file appears in the `raw/` prefix — after the File Router Batch Job has already placed it in the correct hive-partitioned path such as `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. It has one job: decide whether the file is safe to process. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
+The Cloud Run Validator is a Python service deployed to Cloud Run. It receives file batch payloads from Cloud Tasks via the Queue Drainer, processes each file concurrently, and has one job: decide whether each file is safe to process and route it to the correct destination. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
 
 **Why Cloud Run and not Dataflow**
 
@@ -652,7 +730,7 @@ Changing a schema contract requires a deliberate code change, a review, and a re
 
 **How the validator identifies the entity type**
 
-The validator does not rely on the file name to determine whether a file contains customers, products, or orders. It reads the GCS object path. A file at `gs://.../raw/order_items/order_items_delta_20250315.csv` is identified as an order_items file because it lives in the `raw/order_items/` prefix — not because of what it is named. This makes the check robust to file naming inconsistencies.
+The validator does not rely on the file name to determine whether a file contains customers, products, or orders. It reads the GCS object path. A file named `order_items_delta_20250315.csv` is identified as an order_items delta file because its name matches the `order_items_delta_*.csv` pattern — not because of which folder it sits in. The destination path `validated/load_type=delta/entity_type=order_items/date=2025-03-15/` is constructed from the file name alone.
 
 **Outcome routing**
 
@@ -660,7 +738,7 @@ Once all checks have run, the validator takes one of two paths.
 
 **If the file passes:**
 
-The validator reads the partition path from the `raw/` location of the file — the File Router has already established `load_type`, `entity_type`, and `date` — and mirrors that exact path when copying the file to `validated/`. For example a file at `raw/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv` is promoted to `validated/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv`. It then writes a PASS record to `governance.validation_log`. It then notifies the Pipeline Coordinator Agent by publishing a message to a **Pub/Sub topic**.
+The Validator constructs the destination path from the file name — deriving `load_type`, `entity_type`, and `date` — and copies the file from `inbox/` directly to `validated/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv` in a single move. There is no intermediate `raw/` step. It then writes a PASS record to `governance.validation_log`. It then notifies the Pipeline Coordinator Agent by publishing a message to a **Pub/Sub topic**.
 
 Pub/Sub is Google's messaging service. The validator publishes a JSON message to a dedicated topic — for example `pipeline-coordinator-trigger` — containing the entity type, the validated file path, and the validation timestamp. The Pipeline Coordinator Agent is subscribed to this topic. The moment the message is published, Pub/Sub delivers it to the agent, which wakes up and begins evaluating what transformation steps to run. This is a push-based, event-driven handoff — the validator does not call the agent directly, and the agent does not poll for new work. The message on the topic is the signal.
 
@@ -850,7 +928,7 @@ Each curated model reads directly from the corresponding external table and does
 - Attaches two metadata columns: `_loaded_at` (timestamp when this record was processed) and `_source_file` (the full GCS path of the source file)
 - Appends the result to the curated table as a new row — no existing rows are updated or deleted
 
-The curated table receives one new row per source record per pipeline run. The full arrival history of every entity accumulates over time. Older delta records beyond the 90-day retention window are removed by a scheduled Dataform maintenance model. Full load records are retained for the lifetime of the project.
+The curated table receives one new row per source record per pipeline run. The full arrival history of every entity accumulates over time and is retained for the lifetime of the project — no records are ever deleted from the curated layer.
 
 The four curated tables produced are `curated_customers`, `curated_products`, `curated_orders`, and `curated_order_items`. Each is a clean, typed, append-only record of exactly what arrived — no joins, no derived columns, no business rules. All of that happens in Section 7 when the Consumption layer builds the dimensional model from these tables.
 
