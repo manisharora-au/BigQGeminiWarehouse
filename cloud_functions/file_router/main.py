@@ -170,19 +170,11 @@ class HivePartitionBuilder:
         
         # Validate date (YYYYMMDD format)
         try:
-            if len(file_date) != 8 or not file_date.isdigit():
-                raise ValueError(f"Invalid date format: {file_date}")
-
-            logger.info(f"Date format is valid: {file_date}")    
-            
-            # Parse date components for validation
-            year = file_date[:4]
-            month = file_date[4:6]
-            day = file_date[6:8]
-            
-            # Validate date components: Date should be between 1 and 31 and month between 1 and 12
-            if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
-                raise ValueError(f"Invalid month/day values: month={month}, day={day}")
+        #instead of writing our own code we take advantage of the existing functionality
+            parsed_datetime = datetime.strptime(file_date, "%Y%m%d")
+            year = parsed_datetime.year
+            month = parsed_datetime.month
+            day = parsed_datetime.day
             
             logger.info(f"Date components are valid: year={year}, month={month}, day={day}")    
                 

@@ -1,6 +1,10 @@
-### This file is for Hila's use
+### This file is for Hila's use and it doesn't go into the presentation
 
-# important commands
+
+# VERY IMPORTANT
+Hila doesn't have access to Dataflow
+
+# Important basic commands
 
 What files are in the folder?:
 
@@ -29,9 +33,18 @@ Dealing with DLQ and other bad data inserted:
 https://www.skills.google/paths/85/course_templates/53/labs/592810
 
 
-## for the CTO questions:
+## For the CTO questions:
 Serverless Data Processing with Dataflow - Batch Analytics Pipelines with Dataflow (Python)
 https://www.skills.google/paths/85/course_templates/229/labs/607621
+
+
+## and the dataplex:
+https://cloud.google.com/dataplex?hl=en
+
+
+## becuase we don't use Dataflow:
+https://www.skills.google/focuses/102965?parent=catalog
+
 
 
 
