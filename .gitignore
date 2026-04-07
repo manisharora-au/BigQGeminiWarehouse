@@ -37,3 +37,4 @@ terraform/*.tfvars.json
 *.log
 scripts/ExternalTables.sql
 impCommands/
+.env
