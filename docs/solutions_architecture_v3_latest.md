@@ -62,7 +62,7 @@ This platform organises data into three progressive layers. Each layer has a dis
 
 #### 2.1.1 Layer 1 — Raw: exact replica of the source
 
-The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. That file landing fires a GCS Object Finalised event, which triggers the File Router Cloud Function automatically. The File Router identifies the entity type from the file name and moves the file to `raw/{entity}/`. That write to `raw/` fires a second Object Finalised event, which Eventarc picks up and uses to trigger the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
+The Raw layer holds source data exactly as it arrived — no transformations, no corrections, no interpretation of any kind. Files land in a flat `inbox/` prefix in Google Cloud Storage (GCS) as CSVs — the source simply drops a file with no folder convention required. That file landing fires a GCS Object Finalised event, which triggers the Queue Drainer Cloud Function automatically. The Queue Drainer pulls the event from the Pub/Sub subscription, groups it with any other files waiting in the queue, and submits a batch payload to the File Router via Cloud Tasks. The File Router — a Cloud Run Batch Job — picks up the payload, identifies the entity type and load type from each file name, and moves each file to the correct hive-partitioned path under `raw/` — for example `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. That write to `raw/` fires a second Object Finalised event, which Eventarc picks up and uses to trigger the validation gate, which checks that the file conforms to a known schema contract: correct column names, column count, column order, encoding, delimiter, and date format. A file that fails this check is quarantined and never enters the platform. This gate exists to protect all downstream layers from malformed or unexpected input — a problem that, if undetected, would silently corrupt marts and dashboards.
 
 Files that pass validation are moved to the `validated/` prefix and made available to BigQuery as **external tables**. The external tables point exclusively at the `validated/` prefix — they never read from `raw/`, `inbox/`, or any other area. An external table is a typed SQL lens over a file that stays in GCS — BigQuery can query it without physically copying the data. Only files that have cleared the validation gate are visible to BigQuery and therefore to Dataform. This is the enforcement point: no unvalidated data can enter the transformation layer.
 
@@ -166,7 +166,7 @@ The table below gives a single-sentence orientation for every GCP service used i
 | **Infrastructure** | Private Google Access                        | Allows internal platform components to communicate with Google services over Google's private network rather than the public internet, reducing exposure                                                                                                                                                                                              |
 | **All layers**     | Dataplex                                     | Provides a single governance view across all three data layers — cataloguing every table, tracking where data came from, running daily data quality checks, and enforcing access controls on sensitive fields such as customer names and email addresses                                                                                             |
 | **Raw**            | Google Cloud Storage                         | Stores all platform data across six prefixes:`inbox/` for files as they arrive from the source, `raw/` for files moved into the correct partitioned folder structure, `validated/`, `quarantine/`, `archive/`, and `temp/`                                                                                                                |
-| **Raw**            | Cloud Functions — File Router               | Triggered by a GCS Object Finalised event when any file lands in the `inbox/` prefix — inspects the file name to determine the entity type and whether it is a full load or a delta, and moves the file into the correct `raw/{entity}/` subfolder; writing to `raw/` itself fires a second Object Finalised event that triggers the Validator |
+| **Raw**            | Cloud Run Batch Job — Queue Drainer & File Router | A two-component system: Queue Drainer (Cloud Function) pulls Pub/Sub messages from GCS events and triggers File Router (Cloud Run batch job) via Cloud Tasks — processes multiple files concurrently with async operations, applies hive partitioning structure, and routes to `raw/load_type={type}/entity_type={entity}/date={date}/` |
 | **Raw**            | Eventarc                                     | Watches two GCS prefixes for Object Finalised events — fires on `inbox/` to trigger the File Router, and fires on `raw/` to trigger the Cloud Run Validator; both transitions are fully automatic with no polling or manual intervention                                                                                                         |
 | **Raw**            | Pub/Sub                                      | Carries the PASS signal from the Cloud Run Validator to the Pipeline Coordinator Agent — the validator publishes a message to a topic, the agent is subscribed and wakes up the moment it arrives                                                                                                                                                    |
 | **Raw**            | Cloud Logging                                | Receives structured ERROR log entries from the Cloud Run Validator on every validation failure, which Cloud Monitoring watches to fire the alerting pipeline                                                                                                                                                                                          |
@@ -366,7 +366,7 @@ Stage 1 — Terraform reads the infrastructure definitions and provisions every 
 
 Stage 2 — The Dataform transformation logic is deployed to BigQuery. All of the SQL models that clean, enrich, and organise the data are registered and ready to run. Nothing runs yet — this step just makes the models available.
 
-Stage 3 — The initial source CSV files are copied from the shared hackathon bucket directly into the `inbox/` prefix of the platform bucket. The File Router Cloud Function fires automatically, moves each file into the correct `raw/{entity}/` subfolder, and triggers the validation and pipeline flow from there.
+Stage 3 — The initial source CSV files are copied from the shared hackathon bucket directly into the `inbox/` prefix of the platform bucket. The Queue Drainer Cloud Function fires automatically, batches the events, and submits them to the File Router Batch Job via Cloud Tasks. The File Router moves each file into the correct hive-partitioned `raw/` path and triggers the validation and pipeline flow from there.
 
 Stage 4 — The full data pipeline (described below) runs end to end for the first time. Every layer is processed in order: the files are validated, the data is cleaned and enriched, the dimensional model is built, and the persona dashboards become live.
 
@@ -382,7 +382,7 @@ This pipeline runs continuously during normal operations. It is event-driven, me
 
 **Delta mode — what happens when a new file arrives:**
 
-A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. This landing fires a GCS Object Finalised event, which triggers the File Router Cloud Function. The File Router moves the file to `raw/{entity}/`. That write fires a second Object Finalised event, which Eventarc picks up and uses to trigger the Cloud Run Validator. If the file passes validation, the Validator promotes it to the correct `validated/{entity}/load_type=delta/date=YYYY-MM-DD/` subfolder — applying the partition structure at that point. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
+A new data file lands in the `inbox/` prefix of Cloud Storage — the source drops a file with no folder convention required. This landing fires a GCS Object Finalised event, which triggers the Queue Drainer Cloud Function. The Queue Drainer pulls the message from Pub/Sub, batches it with any other queued files, and submits a payload to the File Router Batch Job via Cloud Tasks. The File Router identifies the entity type and load type from the file name and moves the file to the correct hive-partitioned path — for example `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. That write fires a second Object Finalised event, which Eventarc picks up and uses to trigger the Cloud Run Validator. If the file passes validation, the Validator mirrors the same partition path when promoting the file to `validated/` — for example `validated/load_type=delta/entity_type=orders/date=2025-03-15/`. The Validator reads the file header, checks the column structure against the known schema, and makes a decision. If the file fails, it is moved to the quarantine area, a record is written to the audit log, and an alert is raised. The pipeline stops. If the file passes, it is moved to the validated area and the Pipeline Coordinator Agent is notified.
 
 The Pipeline Coordinator Agent checks what has already run, determines which transformation steps are affected by this particular file, and instructs Dataform to run those steps — and only those steps — in the correct order. Dataform cleans and enriches the data and writes it to the curated tables. Data quality checks run automatically as part of this process. If all checks pass, BigQuery ML runs to refresh the AI-generated columns in the affected mart tables. Dataplex then runs a quality scan across the updated tables. The end-to-end time from file arrival to updated dashboards is under five minutes.
 
@@ -451,11 +451,15 @@ This is the platform's own bucket, provisioned by Terraform and owned entirely b
 | Path                                                                                           | Purpose                                                                                       |
 | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `gs://intelia-hackathon-dev-raw-data/inbox/`                                                 | Files land here first — the source drops files with no folder convention required            |
-| `gs://intelia-hackathon-dev-raw-data/raw/customers/`                                         | Customer files staged here by the File Router — flat, no partition structure                 |
-| `gs://intelia-hackathon-dev-raw-data/raw/products/`                                          | Product files staged here by the File Router — flat, no partition structure                  |
-| `gs://intelia-hackathon-dev-raw-data/raw/orders/`                                            | Order files staged here by the File Router — flat, no partition structure                    |
-| `gs://intelia-hackathon-dev-raw-data/raw/order_items/`                                       | Order item files staged here by the File Router — flat, no partition structure               |
-| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/`                    | Validated full customer extracts — partition structure applied by the Validator on promotion |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=customers/date=YYYY-MM-DD/` | Full customer extracts — hive partition structure applied by the File Router Batch Job |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=customers/date=YYYY-MM-DD/` | Delta customer files — one dated subfolder per batch drop |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=products/date=YYYY-MM-DD/` | Full product extracts |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=products/date=YYYY-MM-DD/` | Delta product files |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=orders/date=YYYY-MM-DD/` | Full order extracts |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=orders/date=YYYY-MM-DD/` | Delta order files |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=full/entity_type=order_items/date=YYYY-MM-DD/` | Full order item extracts |
+| `gs://intelia-hackathon-dev-raw-data/raw/load_type=delta/entity_type=order_items/date=YYYY-MM-DD/` | Delta order item files |
+| `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=full/`                    | Validated full customer extracts — Validator mirrors partition path from raw/ on promotion |
 | `gs://intelia-hackathon-dev-raw-data/validated/customers/load_type=delta/date=YYYY-MM-DD/`   | Validated delta customer files — one dated subfolder per successful drop                     |
 | `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=full/`                     | Validated full product extracts                                                               |
 | `gs://intelia-hackathon-dev-raw-data/validated/products/load_type=delta/date=YYYY-MM-DD/`    | Validated delta product files                                                                 |
@@ -468,52 +472,130 @@ This is the platform's own bucket, provisioned by Terraform and owned entirely b
 | `gs://intelia-hackathon-dev-raw-data/archive/`                                               | Validated files moved here after processing completes                                         |
 | `gs://intelia-hackathon-dev-raw-data/temp/`                                                  | Temporary working space for Cloud Run jobs                                                    |
 
-The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The File Router Cloud Function is the only process permitted to move files from `inbox/` to `raw/`. The validator is the only process permitted to move files from `raw/` to `validated/` or `quarantine/`. No other service has write access to any of those prefixes. This two-step routing ensures that files are both correctly structured and validated before they can reach the transformation layer.
+The `inbox/` prefix is where all incoming files land — the source has write access only to this prefix. The Queue Drainer and File Router Batch Job together are the only processes permitted to move files from `inbox/` to `raw/`. The validator is the only process permitted to move files from `raw/` to `validated/` or `quarantine/`. No other service has write access to any of those prefixes. This two-step routing ensures that files are both correctly structured and validated before they can reach the transformation layer.
 
 Files in `raw/` are kept for 365 days and cannot be deleted within that window. After 30 days they move to cheaper nearline storage, and after 90 days to coldline storage — preserving the full history without the cost of keeping everything in hot storage indefinitely.
 
 ---
 
-### 5.2 Cloud Functions — The File Router
+### 5.2 Cloud Run Batch Job — Queue Drainer & File Router
 
-When a file lands in the `inbox/` prefix, GCS fires an **Object Finalised event** automatically. This event triggers the File Router Cloud Function — the same event mechanism used throughout this platform whenever a file write needs to kick off the next step in the chain. The File Router's job is straightforward: inspect the file name, work out which entity it belongs to, and move it to the correct `raw/{entity}/` subfolder. When the File Router writes the file to `raw/`, that write fires another Object Finalised event — this time on the `raw/` prefix — which Eventarc picks up and uses to trigger the Cloud Run Validator. The source system does not need to know anything about any of this. It just drops a file into `inbox/` and the event chain takes over.
+The file routing system has been redesigned as a microservices architecture with separated queue management and file processing components. This provides better scalability, fault isolation, and cost optimization compared to the original single Cloud Function approach.
+
+**Architecture Components**
+
+**Component 1: Queue Drainer (Cloud Function)**
+- **Purpose**: Lightweight event processing and job orchestration
+- **Trigger**: GCS Object Finalised event when files land in `inbox/`
+- **Technology**: Cloud Function (2nd gen) with minimal resource requirements
+- **Responsibilities**:
+  - Pull messages from Pub/Sub subscription in batches (up to 50 files)
+  - Extract file metadata from Cloud Storage events
+  - Group files into logical processing batches
+  - Trigger Cloud Run batch jobs via Cloud Tasks
+  - Handle message acknowledgments and error routing
+
+**Component 2: File Router (Cloud Run Batch Job)**
+- **Purpose**: Heavy-duty file processing with concurrent execution
+- **Trigger**: Cloud Tasks messages from Queue Drainer
+- **Technology**: Cloud Run batch job with configurable resources
+- **Responsibilities**:
+  - Process batches of files received via Cloud Tasks payload
+  - Concurrent file operations using asyncio (default: 10 workers)
+  - Apply hive partitioning structure: `load_type={type}/entity_type={entity}/date={date}/`
+  - Route files to appropriate `raw/` destinations
+  - Generate processing statistics and governance logs
+
+**Communication Layer: Cloud Tasks**
+- **Benefits**: Reliable delivery, retry logic, dead letter queues
+- **Payload**: JSON containing file batch information and processing mode
+- **Rate Control**: Configurable to prevent resource saturation
 
 **How it determines the entity type**
 
-The File Router reads the file name and matches it against a known set of naming patterns:
+The File Router reads file names and matches them against known patterns:
 
-| File name pattern     | Entity      |
-| --------------------- | ----------- |
-| `customers_*.csv`   | customers   |
-| `products_*.csv`    | products    |
-| `orders_*.csv`      | orders      |
-| `order_items_*.csv` | order_items |
+| File name pattern     | Entity      | Load Type | Destination Pattern |
+| --------------------- | ----------- | --------- | ------------------- |
+| `customers_YYYYMMDD.csv` | customers | full | `load_type=full/entity_type=customers/date=YYYY-MM-DD/` |
+| `batch_XX_customers_delta.csv` | customers | delta | `load_type=delta/entity_type=customers/date=YYYY-MM-DD/` |
+| `products_YYYYMMDD.csv` | products | full | `load_type=full/entity_type=products/date=YYYY-MM-DD/` |
+| `batch_XX_products_delta.csv` | products | delta | `load_type=delta/entity_type=products/date=YYYY-MM-DD/` |
 
-If the file name does not match any known pattern, the File Router moves it to `quarantine/inbox_unrecognised/` and writes a log entry. The validation pipeline is not triggered.
+Unrecognized files are moved to `quarantine/inbox_unrecognised/` with structured logging.
 
-**How it determines full load vs delta**
+**File Processing Pipeline**
 
-The File Router checks whether the file name contains the word `delta`. A file named `customers_delta_20250315.csv` is treated as a delta. A file named `customers_20250101.csv` with no `delta` marker is treated as a full load.
+1. **Metadata Extraction**: Parse filename for entity type, load type, and date
+2. **Hive Partition Building**: Generate destination paths with proper partition structure
+3. **Async File Operations**: 
+   - Copy files to partitioned `raw/` destinations
+   - Archive originals to `archive/` folder
+   - Generate clean, standardized filenames
+4. **Governance Logging**: Record all operations for audit and monitoring
 
-**What it does with the file**
+**Destination File Structure**
 
-For both full load and delta files, the File Router moves the file to a flat entity subfolder:
-
+Files are routed to hive-partitioned destinations:
 ```
-raw/{entity}/filename.csv
+raw/
+├── load_type=full/
+│   ├── entity_type=customers/
+│   │   └── date=2026-01-01/
+│   │       └── customers_full_2026-01-01.csv
+│   └── entity_type=products/
+│       └── date=2026-01-01/
+│           └── products_full_2026-01-01.csv
+└── load_type=delta/
+    ├── entity_type=customers/
+    │   └── date=2026-01-15/
+    │       └── customers_delta_batch_001_2026-01-15.csv
+    └── entity_type=orders/
+        └── date=2026-01-15/
+            └── orders_delta_batch_002_2026-01-15.csv
 ```
 
-The partition structure — `load_type=` and `date=` — is not applied here. The File Router's only job is to identify the entity and stage the file in the right place for the Validator. The Validator applies the partition structure when it promotes the file to `validated/`. The original file in `inbox/` is deleted once the move completes.
+**Scalability Benefits**
 
-**Why Cloud Functions and not Cloud Run**
+- **Concurrent Processing**: Batch job handles 10+ files simultaneously
+- **No Timeout Limits**: Cloud Run jobs can process large batches without 9-minute function limits
+- **Cost Efficiency**: Only runs when there's work to do, processes multiple files per execution
+- **Fault Isolation**: Queue drainer failures don't affect file processing logic
+- **Independent Scaling**: Components scale based on their specific resource requirements
 
-The File Router is a simple, single-purpose task: read a file name, derive a path, move a file. It takes milliseconds and requires no persistent container or HTTP endpoint. Cloud Functions is the correct tool for this — it starts instantly in response to a GCS event, runs the move, and terminates. Cloud Run would add unnecessary overhead for a task this lightweight.
+**Error Handling**
+
+- **Individual File Failures**: Don't stop batch processing
+- **Retry Logic**: Cloud Tasks provides automatic retry with exponential backoff
+- **Dead Letter Queues**: Failed tasks routed for manual inspection
+- **Structured Logging**: All failures captured with detailed context for debugging
+
+**Environment Configuration**
+
+```bash
+# Queue Drainer
+PUBSUB_SUBSCRIPTION=file-upload-events-sub
+BATCH_SIZE=50
+CLOUD_TASKS_QUEUE=file-processing-queue
+
+# File Router Batch Job
+MAX_WORKERS=10
+PROCESSOR_VERSION=2.0
+MANUAL_BUCKET_SCAN=bucket-name  # Optional for backfill operations
+```
+
+**Trigger Modes**
+
+- **Event-Driven**: Normal operation via GCS events → Pub/Sub → Queue Drainer → Cloud Tasks → File Router
+- **Scheduled**: Cloud Scheduler can trigger batch processing at fixed intervals
+- **Manual**: Direct bucket scan mode for backfill operations
+- **On-Demand**: Manual execution via Cloud Console or CLI
 
 ---
 
 ### 5.3 Cloud Run Validator — The Validation Gate
 
-The Cloud Run Validator is a lightweight Python service deployed to Cloud Run. It is triggered by Eventarc when a file appears in the `raw/` prefix — after the File Router has already placed it in the correct partitioned subfolder. It has one job: decide whether the file is safe to process. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
+The Cloud Run Validator is a lightweight Python service deployed to Cloud Run. It is triggered by Eventarc when a file appears in the `raw/` prefix — after the File Router Batch Job has already placed it in the correct hive-partitioned path such as `raw/load_type=delta/entity_type=orders/date=2025-03-15/`. It has one job: decide whether the file is safe to process. It does this without reading the full file — it reads only the header row and a small sample of data rows. This keeps the check fast and inexpensive regardless of file size.
 
 **Why Cloud Run and not Dataflow**
 
@@ -578,7 +660,7 @@ Once all checks have run, the validator takes one of two paths.
 
 **If the file passes:**
 
-The validator determines whether the file is a full load or a delta from its name, derives today's date, constructs the correct partitioned path, and copies the file to `gs://intelia-hackathon-dev-raw-data/validated/{entity}/load_type={full|delta}/date={YYYY-MM-DD}/`. It then writes a PASS record to `governance.validation_log`. It then notifies the Pipeline Coordinator Agent by publishing a message to a **Pub/Sub topic**.
+The validator reads the partition path from the `raw/` location of the file — the File Router has already established `load_type`, `entity_type`, and `date` — and mirrors that exact path when copying the file to `validated/`. For example a file at `raw/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv` is promoted to `validated/load_type=delta/entity_type=orders/date=2025-03-15/filename.csv`. It then writes a PASS record to `governance.validation_log`. It then notifies the Pipeline Coordinator Agent by publishing a message to a **Pub/Sub topic**.
 
 Pub/Sub is Google's messaging service. The validator publishes a JSON message to a dedicated topic — for example `pipeline-coordinator-trigger` — containing the entity type, the validated file path, and the validation timestamp. The Pipeline Coordinator Agent is subscribed to this topic. The moment the message is published, Pub/Sub delivers it to the agent, which wakes up and begins evaluating what transformation steps to run. This is a push-based, event-driven handoff — the validator does not call the agent directly, and the agent does not poll for new work. The message on the topic is the signal.
 
