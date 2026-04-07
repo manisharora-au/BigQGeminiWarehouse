@@ -1,9 +1,33 @@
 """
 File Metadata Extractor Module
 
-Handles extraction of metadata from various filename patterns for the data pipeline.
+Handles extraction of metadata from various filename patterns for the simplified data pipeline.
 This module provides methods to parse different file naming conventions and extract
 relevant metadata for downstream processing.
+
+Key Responsibilities:
+- Parse filename patterns to identify entity type (customers, orders, order_items, products)
+- Determine load type (full or delta) from filename structure
+- Extract date information from full load filenames
+- Generate batch identifiers for delta files using current date
+- Validate entity types against supported schema definitions
+- Provide utilities for filename pattern validation and debugging
+
+Supported Filename Patterns:
+1. Full Load: {entity}_{YYYYMMDD}.csv
+   - Example: customers_20260101.csv
+   - Contains explicit date in filename
+   
+2. Delta Load: batch_{XX}_{entity}_delta.csv  
+   - Example: batch_01_customers_delta.csv
+   - Uses current date for partitioning (no date in filename)
+
+Metadata Structure:
+- entity_type: customers | orders | order_items | products
+- load_type: full | delta
+- batch_id: batch_XXX (delta files only, zero-padded)
+- file_date: YYYYMMDD format
+- original_filename: preserved for audit trail
 
 Author: Manish Arora
 Version: 1.0

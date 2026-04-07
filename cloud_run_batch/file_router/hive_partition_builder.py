@@ -3,10 +3,32 @@ Hive Partition Builder Module
 
 Builds hive-style partition paths for data organization in the validated/ layer only.
 This module handles the creation of partitioned directory structures following
-hive conventions for efficient BigQuery querying.
+hive conventions for efficient BigQuery querying in the simplified architecture.
+
+Key Responsibilities:
+- Generate hive-partitioned paths for validated/ layer only
+- Convert YYYYMMDD format to ISO date format (YYYY-MM-DD) for BigQuery compatibility
+- Build quarantine paths with flat structure for manual review
+- Generate standardized filenames for validated files
+- Validate date components and handle formatting errors
+- Extract partition information for debugging and governance
+
+Partitioning Strategy:
+- inbox/: Flat structure (no partitioning)
+- validated/: Full hive partitioning applied by Validator
+  - Pattern: validated/load_type={full|delta}/entity_type={entity}/date={YYYY-MM-DD}/
+  - Examples: 
+    - validated/load_type=full/entity_type=customers/date=2026-01-01/
+    - validated/load_type=delta/entity_type=orders/date=2026-01-15/
+- quarantine/: Flat structure for failed files (no partitioning)
+
+Filename Conventions:
+- Full files: {entity}_full_{YYYY-MM-DD}.csv
+- Delta files: {entity}_delta_{batch_id}_{YYYY-MM-DD}.csv
+- Preserves original filename in quarantine for audit trail
 
 Author: Manish Arora
-Version: 2.0
+Version: 1.0
 """
 
 import logging
