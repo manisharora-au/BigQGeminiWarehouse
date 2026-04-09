@@ -101,10 +101,13 @@ class BigQueryLogging:
             bool: True if insert successful, False otherwise
         """
         try:
+            # Get a BQ Client handle
             client = bigquery.Client(project=project_id)
+            # Get the table reference
             table_ref = client.dataset(dataset_id).table(table_id)
             
             # Insert the record
+            # The API / method needs a list of dictionaries as input to insert data
             errors = client.insert_rows_json(table_ref, [validation_record])
             
             if errors:
@@ -162,6 +165,7 @@ class BigQueryLogging:
         """
         stats = {'successful': 0, 'failed': 0}
         
+        # Check if the validation_records list is empty. If it is, return the stats dictionary.
         if not validation_records:
             return stats
             
@@ -176,7 +180,8 @@ class BigQueryLogging:
             client = bigquery.Client(project=project_id)
             table_ref = client.dataset(dataset_id).table(table_id)
             
-            # Batch insert
+            # Batch insert List of validation records list object
+            # The dictionary objects auto unpacks the key-value pairs into columns and values.
             errors = client.insert_rows_json(table_ref, validation_records)
             
             if errors:
@@ -278,7 +283,9 @@ class BigQueryLogging:
             bool: True if insert successful, False otherwise
         """
         try:
+            # Get a BQ Client handle
             client = bigquery.Client(project=project_id)
+            # Get the table reference
             table_ref = client.dataset(dataset_id).table(table_id)
             
             errors = client.insert_rows_json(table_ref, [batch_record])

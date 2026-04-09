@@ -38,7 +38,8 @@ from .cloud_logging import CloudLogging
 # Configure logging
 logger = logging.getLogger(__name__)
 
-
+#  A data Class is a class that is primarily used to store data. Just like a collection of variables.
+#  The benefit of using a data class over any other collection is that you could apply methods on data defined within the body of the class.
 @dataclass
 class ValidationResult:
     """
@@ -60,7 +61,6 @@ class ValidationResult:
     error_details: Dict[str, str]
     metadata: Dict[str, Optional[str]]
     file_size_bytes: Optional[int]
-
 
 class FileValidator:
     """

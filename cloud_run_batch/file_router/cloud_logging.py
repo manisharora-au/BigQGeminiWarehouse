@@ -25,7 +25,6 @@ import uuid
 # Configure logging
 logger = logging.getLogger(__name__)
 
-
 class CloudLogging:
     """
     Handles structured logging to Google Cloud Logging for operational visibility.
@@ -98,9 +97,17 @@ class CloudLogging:
         }
         
         # Log to Cloud Logging with appropriate severity
+        # The below code snippet logs (system.out.println equivalent) in Java to Cloud Logging.
+        # The logger.info() method signature is: logger.info(msg, *args, **kwargs)
         if success:
             logger.info(
                 f"Validation SUCCESS: {filename} - {metadata.get('entity_type', 'unknown')}",
+                # The extra parameter is a special keyword argument that the Python logging system recognizes. 
+                # The extra= is essential for Cloud Logging integration to properly structure the log data.
+                # When you pass extra={'key': 'value'}, the logging framework:
+                # 1. Extracts those key-value pairs
+                # 2. Adds them as attributes to the LogRecord object
+                # 3. Makes them available to formatters and handlers (like Cloud Logging)
                 extra=log_entry
             )
         else:
@@ -127,6 +134,7 @@ class CloudLogging:
             processing_mode (str): Processing mode (e.g., 'standard', 'priority')
             max_workers (int): Maximum concurrent workers
         """
+        # Logger.info and/or logger.error is used to log messages to Cloud Logging. Extra is essential for structured logging.
         logger.info(
             f"Batch processing STARTED: {batch_id} - {file_count} files with {max_workers} workers",
             extra={
