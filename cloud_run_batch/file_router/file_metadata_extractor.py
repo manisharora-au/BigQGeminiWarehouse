@@ -94,10 +94,14 @@ class FileMetadataExtractor:
         
         # Pattern 1: Full snapshot files (entity_YYYYMMDD)
         full_pattern = r'^([a-z_]+)_(\d{8})$'
+        #  the below matches the pattern for full snapshot files. The actual File name is not being matched, but only the pattern.
         full_match = re.match(full_pattern, basename)
         
         if full_match:
+            #  the below line extracts the entity and date from the filename
             entity, date_str = full_match.groups()
+            logger.info(f"Extracted entity: {entity}, date: {date_str}")
+            #  the below line checks if the entity is supported
             if entity in SUPPORTED_ENTITIES:
                 metadata.update({
                     'entity_type': entity,
@@ -149,4 +153,5 @@ class FileMetadataExtractor:
         Returns:
             set: Set of supported entity type strings
         """
+        #  the copy() method is used to return a copy of the set, so that the original set is not modified.
         return SUPPORTED_ENTITIES.copy()
