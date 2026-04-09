@@ -151,47 +151,80 @@ class CloudStorageManager:
                     # Get a handle to the source blob (indirectly the source File)
                     source_blob = source_bucket.blob(source_blob_name)
                     
-                    # Check if source file exists
-                    if not source_blob.exists():
+                    # Next step is to Check if source file exists
+                    # Since, source_blob.exists() is a blocking GCS SDK call — offloaded to the thread pool. If it is executed direcrtly, then
+                    # the get event loop is waiting and doing nothing. Whereas when the file is being checked for existence via run_in_executor, 
+                    # the event loop is not blocked while waiting for GCS to respond. Without this, the event loop would freeze here and no other 
+                    # coroutines could run until GCS responds, defeating the concurrency the semaphore provides.
+                    loop = asyncio.get_event_loop()
+                    source_exists = await loop.run_in_executor(None, source_blob.exists) 
+                    # None means to use the default executor. There are no arguments to be passed to the source_blob.exists() method.
+                    if not source_exists:
                         error_msg = f"Source file does not exist: {source_path}"
                         # Log the storage operation to Cloud Logging in async mode.
                         await self._log_storage_operation(
-                            "copy", source_path, destination_path, False,
-                            int((time.time() - start_time) * 1000), error_msg, validation_id
+                            operation="copy",
+                            source_path=source_path,
+                            destination_path=destination_path,
+                            success=False,
+                            duration_ms=int((time.time() - start_time) * 1000),
+                            error_message=error_msg,
+                            validation_id=validation_id
                         )
                         return False, error_msg
                     
-                    # Copy the blob
-                    destination_blob = source_bucket.copy_blob(
-                        source_blob, destination_bucket, destination_blob_name
+                    # Copy the blob.
+                    # source_bucket.copy_blob() is a blocking GCS SDK call — this is the most
+                    # expensive operation in the method and the most important to offload.
+                    # Wrapping it in run_in_executor means up to max_concurrent_operations copies
+                    # can be in-flight simultaneously across the thread pool while the event loop
+                    # remains free to handle other coroutines.
+                    destination_blob = await loop.run_in_executor( # The method signature is run_in_executor(executor, func, *args)
+                        None, # executor
+                        source_bucket.copy_blob, # func
+                        source_blob, destination_bucket, destination_blob_name # args
                     )
+                    #  The return type of the copy_blob method is a blob object. The output would look like <Blob: my-bucket, path/to/file.txt>
+                    
                     
                     # Verify the copy was successful with polling (eventual consistency)
                     max_wait_seconds = 10
-                    poll_interval = 0.5
+                    poll_interval = 2
                     verification_start = time.time()
                     
+                    # Start checking if the target blob exists on destination bucket every 2 seconds for 10 seconds, since the copy 
+                    # operation is eventually consistent.
+                    # destination_blob.exists() is also a blocking GCS SDK call — offloaded to thread pool.
+                    # asyncio.sleep() between polls is non-blocking — the event loop remains free during the wait.
                     while time.time() - verification_start < max_wait_seconds:
-                        if destination_blob.exists():
+                        destination_exists = await loop.run_in_executor(None, destination_blob.exists)
+                        # The output would be True if the file exists on the destination bucket, False otherwise.
+                        if destination_exists:
                             duration_ms = int((time.time() - start_time) * 1000)
                             # Log the storage operation to Cloud Logging in async mode.
                             await self._log_storage_operation(
-                                "copy", source_path, destination_path, True,
-                                duration_ms, None, validation_id
+                                operation="copy",
+                                source_path=source_path,
+                                destination_path=destination_path,
+                                success=True,
+                                duration_ms=duration_ms,
+                                error_message=None,
+                                validation_id=validation_id
                             )
                             return True, None
                         
-                        # Wait before next check
+                        # Else, keep waiting for 2 seconds before next check
                         await asyncio.sleep(poll_interval)
                     
-                    # Copy verification timeout
+                    # Copy verification timeout. The below block will execute as an else case to the while loop
                     error_msg = f"Copy verification timeout after {max_wait_seconds}s - destination file not found"
                     await self._log_storage_operation(
                         "copy", source_path, destination_path, False,
                         int((time.time() - start_time) * 1000), error_msg, validation_id
                     )
                     return False, error_msg
-                        
+
+                #  The NotFound exception will be raised if the source or destination bucket or file is not found
                 except gcs_exceptions.NotFound as e:
                     error_msg = f"Bucket or file not found: {str(e)}"
                     await self._log_storage_operation(
@@ -200,6 +233,7 @@ class CloudStorageManager:
                     )
                     return False, error_msg
                     
+                #  The Forbidden exception will be raised if the source or destination bucket or file is not accessible
                 except gcs_exceptions.Forbidden as e:
                     error_msg = f"Access denied: {str(e)}"
                     await self._log_storage_operation(
@@ -207,11 +241,12 @@ class CloudStorageManager:
                         int((time.time() - start_time) * 1000), error_msg, validation_id
                     )
                     return False, error_msg
-                    
+
+                #  Any other exception will be caught here
                 except Exception as e:
                     error_msg = f"Copy operation failed (attempt {attempt + 1}): {str(e)}"
                     
-                    # If this is the last attempt, log and return failure
+                    # Onlyu log when it is the last attempt and no success
                     if attempt == max_retries:
                         await self._log_storage_operation(
                             "copy", source_path, destination_path, False,
@@ -219,7 +254,12 @@ class CloudStorageManager:
                         )
                         return False, error_msg
                     
-                    # Wait before retry with exponential backoff
+                    # This is an important development construct and an industry standard to retry on failure with exponential backoff
+                    # Example with max_retries=3:
+                    # - Attempt 0: Fails → wait 1 second → continue loop
+                    # - Attempt 1: Fails → wait 2 seconds → continue loop
+                    # - Attempt 2: Fails → wait 4 seconds → continue loop   
+                    # - Attempt 3: Fails → attempt == max_retries, so give up and return error
                     wait_time = 2 ** attempt
                     await asyncio.sleep(wait_time)
                     
@@ -248,21 +288,27 @@ class CloudStorageManager:
         Returns:
             Tuple[bool, Optional[str]]: (success, error_message)
         """
-        # First copy the file
-        copy_success, copy_error = await self.copy_file_to_destination(
-            source_bucket_name, source_blob_name,
-            destination_bucket_name, destination_blob_name,
-            validation_id, max_retries
+        # First copy the file using the method copy_file_to_destination
+        copy_success, copy_error = await self.copy_file_to_destination(source_bucket_name
+                                                                        ,source_blob_name
+                                                                        ,destination_bucket_name
+                                                                        ,destination_blob_name
+                                                                        ,validation_id
+                                                                        ,max_retries
         )
         
+        #  If Not True
         if not copy_success:
             return False, f"Move failed during copy: {copy_error}"
         
-        # Then delete the source file
-        delete_success, delete_error = await self.delete_file_from_bucket(
-            source_bucket_name, source_blob_name, validation_id, max_retries
+        # Then delete the source file using the method delete_file_from_bucket
+        delete_success, delete_error = await self.delete_file_from_bucket(source_bucket_name
+                                                                        ,source_blob_name
+                                                                        ,validation_id
+                                                                        ,max_retries
         )
         
+        # If Not True
         if not delete_success:
             # Copy succeeded but delete failed - log this as a warning
             source_path = f"gs://{source_bucket_name}/{source_blob_name}"
@@ -279,9 +325,14 @@ class CloudStorageManager:
         destination_path = f"gs://{destination_bucket_name}/{destination_blob_name}"
         
         await self._log_storage_operation(
-            "move", source_path, destination_path, True, 0, None, validation_id
+            operation="move", 
+            source_path=source_path, 
+            destination_path=destination_path, 
+            success=True, 
+            duration_ms=0, 
+            error_message=None, 
+            validation_id=validation_id
         )
-        
         return True, None
 
     async def delete_file_from_bucket(
@@ -290,7 +341,7 @@ class CloudStorageManager:
         blob_name: str,
         validation_id: Optional[str] = None,
         max_retries: int = 3
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str]]: # Immutable
         """
         Async delete file with retry logic.
         
@@ -303,44 +354,69 @@ class CloudStorageManager:
         Returns:
             Tuple[bool, Optional[str]]: (success, error_message)
         """
+        #  Same semaphore logic applied as in copy_file_to_destination
+        #  Semaphores are created once in the constructor to allow max number of concurrent operations to occuer. 
+        #  Effectively, if there are copy operations occuring elsewhere, the delete operation will wait for the semaphore to be released.
         async with self.semaphore:
             file_path = f"gs://{bucket_name}/{blob_name}"
             start_time = time.time()
-            
+            # The below line is used to get the event loop. An event loop is a programming 
+            # construct that manages the execution of asynchronous code.   
+            loop = asyncio.get_event_loop()
+
             for attempt in range(max_retries + 1):
                 try:
+                    #  Get a bucket object from the client.
                     bucket = self.client.bucket(bucket_name)
+                    #  Get a handle to the blob (file) to be deleted.
                     blob = bucket.blob(blob_name)
                     
-                    # Check if file exists before attempting delete
-                    if not blob.exists():
+                    # Check if file exists before attempting delete.
+                    # blob.exists() is a blocking GCS SDK call — offloaded to the thread pool
+                    # via run_in_executor so the event loop is not blocked while GCS responds.
+                    blob_exists = await loop.run_in_executor(None, blob.exists)
+                    if not blob_exists:
                         # File already deleted or never existed - consider this success
                         duration_ms = int((time.time() - start_time) * 1000)
                         # Log the operation as successful
-                        await self._log_storage_operation(
-                            "delete", file_path, "", True, duration_ms, 
-                            "File already deleted or not found", validation_id
-                        )
+                        await self._log_storage_operation(operation="delete"
+                                                            ,source_path=file_path
+                                                            ,destination_path=""
+                                                            ,success=True
+                                                            ,duration_ms=duration_ms
+                                                            ,error_message="File already deleted or not found"
+                                                            ,validation_id=None if validation_id is None else validation_id)
                         return True, None
                     
-                    # Delete the blob
-                    blob.delete()
+                    # Delete the blob.
+                    # blob.delete() is a blocking GCS SDK call — offloaded to the thread pool
+                    # so the event loop remains free to handle other coroutines during the GCS call.
+                    await loop.run_in_executor(None, blob.delete)
                     
-                    # Verify deletion
-                    if not blob.exists():
+                    # Verify deletion — also a blocking GCS call, offloaded to thread pool.
+                    deletion_confirmed = await loop.run_in_executor(None, blob.exists) # returns a True if the blob exists
+                    #  If File not found OR blob does not exist, then the file is deleted successfully.
+                    if not deletion_confirmed:
                         duration_ms = int((time.time() - start_time) * 1000)
-                        await self._log_storage_operation(
-                            "delete", file_path, "", True, duration_ms, None, validation_id
-                        )
+                        await self._log_storage_operation(operation="delete"
+                                                            ,source_path=file_path
+                                                            ,destination_path=""
+                                                            ,success=True
+                                                            ,duration_ms=duration_ms
+                                                            ,error_message=None
+                                                            ,validation_id=None if validation_id is None else validation_id)
                         return True, None
-                        
+                    # NotFound means file not found to be deleted. Simply do a cloud logging operation and return True.
                 except gcs_exceptions.NotFound:
                     # File not found - consider this success for delete operation
                     duration_ms = int((time.time() - start_time) * 1000)
-                    await self._log_storage_operation(
-                        "delete", file_path, "", True, duration_ms, 
-                        "File not found (already deleted)", validation_id
-                    )
+                    await self._log_storage_operation(operation="delete"
+                                                            ,source_path=file_path
+                                                            ,destination_path=""
+                                                            ,success=True
+                                                            ,duration_ms=duration_ms
+                                                            ,error_message="File not found (already deleted)"
+                                                            ,validation_id=None if validation_id is None else validation_id)
                     return True, None
                     
                 except Exception as e:
@@ -359,54 +435,6 @@ class CloudStorageManager:
                     
             return False, "Max retries exceeded"
 
-    async def batch_copy_validated_files(
-        self,
-        file_operations: List[Dict[str, Any]],
-        max_concurrent: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """
-        Batch copy multiple files concurrently.
-        
-        Args:
-            file_operations (List[Dict[str, Any]]): List of file copy operations
-                Each dict should contain: source_bucket, source_blob, dest_bucket, 
-                dest_blob, validation_id
-            max_concurrent (Optional[int]): Override default concurrency limit
-            
-        Returns:
-            Dict[str, Any]: Statistics - {'successful': count, 'failed': count, 'errors': []}
-        """
-        if max_concurrent:
-            semaphore = asyncio.Semaphore(max_concurrent)
-        else:
-            semaphore = self.semaphore
-            
-        stats = {'successful': 0, 'failed': 0, 'errors': []}
-        
-        async def copy_with_semaphore(operation):
-            async with semaphore:
-                success, error = await self.copy_file_to_destination(
-                    operation['source_bucket'],
-                    operation['source_blob'],
-                    operation['dest_bucket'],
-                    operation['dest_blob'],
-                    operation.get('validation_id')
-                )
-                
-                if success:
-                    stats['successful'] += 1
-                else:
-                    stats['failed'] += 1
-                    stats['errors'].append({
-                        'file': f"gs://{operation['source_bucket']}/{operation['source_blob']}",
-                        'error': error
-                    })
-        
-        # Execute all copy operations concurrently
-        tasks = [copy_with_semaphore(op) for op in file_operations]
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
-        return stats
 
     async def _log_storage_operation(
         self,
@@ -436,10 +464,15 @@ class CloudStorageManager:
         #  The ProcessingLogger.log_cloud_storage_operation_to_cloud_logging is the function to be executed in the thread pool.
         #  The arguments operation, source_path, destination_path, success, duration_ms, error_message are passed to the function.
         await asyncio.get_event_loop().run_in_executor(
-            None,
-            ProcessingLogger.log_cloud_storage_operation_to_cloud_logging,
-            operation, source_path, destination_path, success, 
-            duration_ms, error_message
+                                                    None
+                                                    , ProcessingLogger.log_cloud_storage_operation_to_cloud_logging  # Function to be executed in the thread pool
+                                                    , operation  # Operation type arg
+                                                    , source_path  # Source file path arg
+                                                    , destination_path  # Destination file path arg
+                                                    , success  # Whether operation succeeded arg
+                                                    , duration_ms  # Operation duration arg
+                                                    , error_message  # Error details if failed arg
+                                                    , None if validation_id is None else validation_id  # Validation ID arg
         )
 
     def get_blob_size(self, bucket_name: str, blob_name: str) -> Optional[int]:
@@ -454,7 +487,9 @@ class CloudStorageManager:
             Optional[int]: Size in bytes, None if blob doesn't exist
         """
         try:
+            #  Get a handle to the bucket
             bucket = self.client.bucket(bucket_name)
+            #  Get a handle to the blob
             blob = bucket.blob(blob_name)
             
             if blob.exists():
@@ -478,8 +513,11 @@ class CloudStorageManager:
             bool: True if blob exists, False otherwise
         """
         try:
+            #  Get a handle to the bucket. These are not GCS Blocking calls
             bucket = self.client.bucket(bucket_name)
+            #  Get a handle to the blob
             blob = bucket.blob(blob_name)
+            #  Check if the blob exists
             return blob.exists()
             
         except Exception as e:
