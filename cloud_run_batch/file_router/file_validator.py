@@ -33,7 +33,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from google.cloud import storage
 from .file_metadata_extractor import FileMetadataExtractor
-from .processing_logger import ProcessingLogger
+from .cloud_logging import CloudLogging
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ class FileValidator:
             ValidationResult: Complete validation results
         """
         # Generate validation ID and extract metadata
-        validation_id = ProcessingLogger.log_validation_result_to_cloud_logging(
+        validation_id = CloudLogging.log_validation_result(
             bucket_name=bucket_name,
             filename=filename,
             metadata={},  # Will be updated after extraction
@@ -174,7 +174,7 @@ class FileValidator:
         validation_passed = len(failed_checks) == 0
         
         # Log final validation result
-        ProcessingLogger.log_validation_result_to_cloud_logging(
+        CloudLogging.log_validation_result(
             bucket_name=bucket_name,
             filename=filename,
             metadata=metadata,

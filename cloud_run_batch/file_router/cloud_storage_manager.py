@@ -25,7 +25,7 @@ import time
 from google.cloud import storage
 #  The google.api_core.exceptions module provides a comprehensive set of exception classes that are raised by Google Cloud client libraries.
 from google.api_core import exceptions as gcs_exceptions
-from .processing_logger import ProcessingLogger
+from .cloud_logging import CloudLogging
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -447,7 +447,7 @@ class CloudStorageManager:
         validation_id: Optional[str] = None
     ) -> None:
         """
-        Log storage operation using ProcessingLogger (async wrapper).
+        Log storage operation using CloudLogging (async wrapper).
         
         Args:
             operation (str): Type of operation (copy, move, delete)
@@ -461,11 +461,11 @@ class CloudStorageManager:
         # Run the sync logging method in thread pool to avoid blocking
         #  The run_in_executor method is used to run a function in a separate thread. The mthod signature is run_in_executor(executor, func, *args, **kwargs)
         #  The None argument specifies the default thread pool executor.
-        #  The ProcessingLogger.log_cloud_storage_operation_to_cloud_logging is the function to be executed in the thread pool.
+        #  The CloudLogging.log_cloud_storage_operation is the function to be executed in the thread pool.
         #  The arguments operation, source_path, destination_path, success, duration_ms, error_message are passed to the function.
         await asyncio.get_event_loop().run_in_executor(
                                                     None
-                                                    , ProcessingLogger.log_cloud_storage_operation_to_cloud_logging  # Function to be executed in the thread pool
+                                                    , CloudLogging.log_cloud_storage_operation  # Function to be executed in the thread pool
                                                     , operation  # Operation type arg
                                                     , source_path  # Source file path arg
                                                     , destination_path  # Destination file path arg
