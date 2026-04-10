@@ -9,3 +9,6 @@ git commit -m "Update docs and images, and update .gitignore to ignore terraform
 
 # 4. Push the committed changes to the main branch on the remote origin
 git push origin main
+
+#5 If you just want to add this to your docs/git.commands file, the typical one-liner is:
+git checkout -b <new-branch-name> main
