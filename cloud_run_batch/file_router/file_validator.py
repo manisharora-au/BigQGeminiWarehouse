@@ -98,6 +98,8 @@ class FileValidator:
         self.max_sample_rows = 100  # Rows to sample for validation
 
     @staticmethod
+    #  load_schema will be invoked once when the Cloud Run job starts
+    #  and the result will be cached for the duration of the job
     def load_schema(schema_path: str) -> Dict[str, List[str]]:
         """
         Load expected column lists from a schema.json file.
@@ -115,15 +117,17 @@ class FileValidator:
                     'customers'       -> full-load columns
                     'customers_delta' -> delta-load columns (base + _delta_type, _batch_id, _batch_date)
         """
+        #  Open the file and load the schema
         with open(schema_path) as f:
             schema = json.load(f)
 
-        result = {}
+        result = {} # Result is of type Dict[str, List[str]]
+        #  Traverse through the json structure and extract base and delta columns
         for entity, table in schema["tables"].items():
-            base_cols = [col["name"] for col in table["columns"]]
-            delta_cols = [col["name"] for col in table.get("delta_columns", [])]
-            result[entity] = base_cols
-            result[f"{entity}_delta"] = base_cols + delta_cols
+            base_cols = [col["name"] for col in table["columns"]]        # KeyError if missing. Put results into a List objec 
+            delta_cols = [col["name"] for col in table.get("delta_columns", [])]  # Safe: defaults to []. Put results into a List object
+            result[entity] = base_cols #  Add base columns to the result
+            result[f"{entity}_delta"] = base_cols + delta_cols #  Add delta columns to the result
         return result
 
     async def validate_file(
