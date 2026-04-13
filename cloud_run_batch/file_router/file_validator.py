@@ -58,9 +58,20 @@ class ValidationResult:
     validation_id: str
     passed: bool
     failed_checks: List[str]
+    #  The failed_checks attribute would look like ['column_names', 'column_count', 'column_order', 'non_empty_file', 'utf8_encoding', 'comma_delimiter', 'date_format', 'file_size']
     error_details: Dict[str, str]
+    # The error_details attribute would look like {'column_names': 'Column names do not match expected schema'
+    #                                            'column_count': 'Column count does not match expected schema'
+    #                                            'column_order': 'Column order does not match expected schema'
+    #                                            'non_empty_file': 'File is empty'
+    #                                            'utf8_encoding': 'File is not UTF-8 encoded'
+    #                                            'comma_delimiter': 'File is not comma delimited'
+    #                                            'date_format': 'Date format is not valid'
+    #                                            'file_size': 'File size is too large'}
     metadata: Dict[str, Optional[str]]
+    # The metadata attribute would look like {'entity_type': 'customers', 'date': '20260101', 'file_type': 'csv', 'source': 'gcs'}
     file_size_bytes: Optional[int]
+    # The file_size_bytes attribute would look like 123456789
 
 class FileValidator:
     """
