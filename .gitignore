@@ -32,6 +32,7 @@ terraform/*.tfvars.json
 !**/package*.json
 !**/.vscode/*.json
 !**/tsconfig*.json
+!schemas/*.json
 
 # Scripts and logs
 *.log

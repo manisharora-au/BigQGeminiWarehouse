@@ -1,6 +1,6 @@
 # Git Push Plan
 
-- [/] Stage all modified files (`git add .`)
-- [ ] Commit the changes with a descriptive message (`git commit -m "docs: update task tracking"`)
-- [ ] Push the changes to the remote repository (`git push origin main`)
-- [ ] Verify the repository status (`git status`)
+- [/] Stage all modified files including `.gitignore` and `tasks/todo.md` (`git add .`)
+- [ ] Commit with descriptive message (`git commit -m "feat: updated FileValidator and added schema file"`)
+- [ ] Push to remote repository (`git push origin main`)
+- [ ] Verify repository status (`git status`)

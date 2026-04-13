@@ -28,6 +28,7 @@ Version: 1.0
 import asyncio
 import csv
 import io
+import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -95,6 +96,35 @@ class FileValidator:
         self.storage_client = storage.Client(project=project_id)
         self.metadata_extractor = FileMetadataExtractor()
         self.max_sample_rows = 100  # Rows to sample for validation
+
+    @staticmethod
+    def load_schema(schema_path: str) -> Dict[str, List[str]]:
+        """
+        Load expected column lists from a schema.json file.
+
+        Reads the schema definition and builds two entries per table:
+        - entity_type       -> base column names only (used for full loads)
+        - entity_type_delta -> base + delta column names (used for delta loads)
+
+        Args:
+            schema_path (str): Absolute path to the schema.json file
+
+        Returns:
+            Dict[str, List[str]]: Mapping of entity key to ordered column name list.
+                Keys follow the pattern:
+                    'customers'       -> full-load columns
+                    'customers_delta' -> delta-load columns (base + _delta_type, _batch_id, _batch_date)
+        """
+        with open(schema_path) as f:
+            schema = json.load(f)
+
+        result = {}
+        for entity, table in schema["tables"].items():
+            base_cols = [col["name"] for col in table["columns"]]
+            delta_cols = [col["name"] for col in table.get("delta_columns", [])]
+            result[entity] = base_cols
+            result[f"{entity}_delta"] = base_cols + delta_cols
+        return result
 
     async def validate_file(
         self,
@@ -171,7 +201,7 @@ class FileValidator:
             await self._check_file_size(file_size_bytes, failed_checks, error_details)
             await self._check_utf8_encoding(file_content, failed_checks, error_details)
             await self._check_non_empty_file(file_content, failed_checks, error_details)
-            await self._check_csv_structure(file_content, metadata['entity_type'], failed_checks, error_details)
+            await self._check_csv_structure(file_content, metadata['entity_type'], metadata['load_type'], failed_checks, error_details)
             
         except UnicodeDecodeError as e:
             failed_checks.append('utf8_encoding')
@@ -282,24 +312,31 @@ class FileValidator:
         self,
         file_content: str,
         entity_type: str,
+        load_type: str,
         failed_checks: List[str],
         error_details: Dict[str, str]
     ) -> None:
         """
         Validate CSV structure including columns, delimiter, and data format.
-        
+
+        For delta files (load_type='delta') the schema key is suffixed with '_delta'
+        so that the additional _delta_type, _batch_id, and _batch_date columns are
+        included in the expected column list.
+
         Args:
             file_content (str): File content as string
-            entity_type (str): Expected entity type for schema lookup
+            entity_type (str): Expected entity type for schema lookup (e.g. 'customers')
+            load_type (str): Load type from filename metadata ('full' or 'delta')
             failed_checks (List[str]): List to append failed check names
             error_details (Dict[str, str]): Dict to store error details
         """
         try:
-            # Get expected schema for entity type
-            expected_columns = self.expected_schemas.get(entity_type)
+            # Delta files carry 3 extra columns; use a separate schema key for them
+            schema_key = f"{entity_type}_delta" if load_type == "delta" else entity_type
+            expected_columns = self.expected_schemas.get(schema_key)
             if not expected_columns:
                 failed_checks.append('unknown_entity_type')
-                error_details['unknown_entity_type'] = f"No schema defined for entity type: {entity_type}"
+                error_details['unknown_entity_type'] = f"No schema defined for entity type: {schema_key}"
                 return
             
             # Parse CSV
