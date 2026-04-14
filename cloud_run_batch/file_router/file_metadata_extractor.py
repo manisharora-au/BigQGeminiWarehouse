@@ -37,12 +37,13 @@ import re
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Optional
+from . import settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Configuration constants
-SUPPORTED_ENTITIES = {'customers', 'orders', 'order_items', 'products'}
+SUPPORTED_ENTITIES = settings.SUPPORTED_ENTITIES
 
 class FileMetadataExtractor:
     """

@@ -4,32 +4,152 @@
       "description": "Customer master data including profile, preferences, and account status",
       "primary_key": "customer_id",
       "columns": [
-        { "name": "customer_id",         "type": "STRING",    "nullable": false, "description": "Unique customer identifier (UUID)" },
-        { "name": "first_name",          "type": "STRING",    "nullable": true,  "description": "Customer first name" },
-        { "name": "last_name",           "type": "STRING",    "nullable": true,  "description": "Customer last name" },
-        { "name": "email",               "type": "STRING",    "nullable": true,  "description": "Customer email address" },
-        { "name": "phone",               "type": "STRING",    "nullable": true,  "description": "Customer phone number" },
-        { "name": "date_of_birth",       "type": "DATE",      "nullable": true,  "description": "Customer date of birth" },
-        { "name": "gender",              "type": "STRING",    "nullable": true,  "description": "Customer gender" },
-        { "name": "registration_date",   "type": "TIMESTAMP", "nullable": true,  "description": "Date and time the customer registered" },
-        { "name": "country",             "type": "STRING",    "nullable": true,  "description": "Customer country of residence" },
-        { "name": "city",                "type": "STRING",    "nullable": true,  "description": "Customer city of residence" },
-        { "name": "acquisition_channel", "type": "STRING",    "nullable": true,  "description": "Channel through which the customer was acquired" },
-        { "name": "customer_tier",       "type": "STRING",    "nullable": true,  "description": "Customer loyalty tier (e.g. bronze, silver, gold)" },
-        { "name": "is_email_subscribed", "type": "BOOLEAN",   "nullable": true,  "description": "Whether the customer is subscribed to email marketing" },
-        { "name": "is_sms_subscribed",   "type": "BOOLEAN",   "nullable": true,  "description": "Whether the customer is subscribed to SMS marketing" },
-        { "name": "preferred_device",    "type": "STRING",    "nullable": true,  "description": "Customer preferred device (e.g. desktop, mobile)" },
-        { "name": "preferred_category",  "type": "STRING",    "nullable": true,  "description": "Customer preferred product category" },
-        { "name": "loyalty_points",      "type": "INTEGER",   "nullable": true,  "description": "Current loyalty points balance" },
-        { "name": "account_status",      "type": "STRING",    "nullable": true,  "description": "Current account status (e.g. active, inactive)" },
-        { "name": "last_login_date",     "type": "TIMESTAMP", "nullable": true,  "description": "Date and time of last login" },
-        { "name": "referral_source_id",  "type": "STRING",    "nullable": true,  "description": "ID of the referral source customer" },
-        { "name": "marketing_segment",   "type": "STRING",    "nullable": true,  "description": "Marketing segment classification (e.g. impulse_buyer, deal_seeker)" }
+        {
+          "name": "customer_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Unique customer identifier (UUID)"
+        },
+        {
+          "name": "first_name",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer first name"
+        },
+        {
+          "name": "last_name",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer last name"
+        },
+        {
+          "name": "email",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer email address"
+        },
+        {
+          "name": "phone",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer phone number"
+        },
+        {
+          "name": "date_of_birth",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Customer date of birth"
+        },
+        {
+          "name": "gender",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer gender"
+        },
+        {
+          "name": "registration_date",
+          "type": "TIMESTAMP",
+          "nullable": true,
+          "description": "Date and time the customer registered"
+        },
+        {
+          "name": "country",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer country of residence"
+        },
+        {
+          "name": "city",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer city of residence"
+        },
+        {
+          "name": "acquisition_channel",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Channel through which the customer was acquired"
+        },
+        {
+          "name": "customer_tier",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer loyalty tier (e.g. bronze, silver, gold)"
+        },
+        {
+          "name": "is_email_subscribed",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether the customer is subscribed to email marketing"
+        },
+        {
+          "name": "is_sms_subscribed",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether the customer is subscribed to SMS marketing"
+        },
+        {
+          "name": "preferred_device",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer preferred device (e.g. desktop, mobile)"
+        },
+        {
+          "name": "preferred_category",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Customer preferred product category"
+        },
+        {
+          "name": "loyalty_points",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Current loyalty points balance"
+        },
+        {
+          "name": "account_status",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Current account status (e.g. active, inactive)"
+        },
+        {
+          "name": "last_login_date",
+          "type": "TIMESTAMP",
+          "nullable": true,
+          "description": "Date and time of last login"
+        },
+        {
+          "name": "referral_source_id",
+          "type": "STRING",
+          "nullable": true,
+          "description": "ID of the referral source customer"
+        },
+        {
+          "name": "marketing_segment",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Marketing segment classification (e.g. impulse_buyer, deal_seeker)"
+        }
       ],
       "delta_columns": [
-        { "name": "_delta_type", "type": "STRING",    "nullable": false, "description": "Type of delta operation: INSERT, UPDATE, or DELETE" },
-        { "name": "_batch_id",   "type": "STRING",    "nullable": false, "description": "Identifier of the batch this record belongs to" },
-        { "name": "_batch_date", "type": "TIMESTAMP", "nullable": false, "description": "Timestamp when the batch was created" }
+        {
+          "name": "_delta_type",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Type of delta operation: INSERT, UPDATE, or DELETE"
+        },
+        {
+          "name": "_batch_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Identifier of the batch this record belongs to"
+        },
+        {
+          "name": "_batch_date",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "description": "Timestamp when the batch was created"
+        }
       ]
     },
     "orders": {
@@ -39,34 +159,164 @@
         "customer_id": "customers.customer_id"
       },
       "columns": [
-        { "name": "order_id",                      "type": "STRING",    "nullable": false, "description": "Unique order identifier (UUID)" },
-        { "name": "customer_id",                   "type": "STRING",    "nullable": false, "description": "Foreign key referencing customers.customer_id" },
-        { "name": "order_date",                    "type": "TIMESTAMP", "nullable": true,  "description": "Date and time the order was placed" },
-        { "name": "order_status",                  "type": "STRING",    "nullable": true,  "description": "Current order status (e.g. completed, refunded)" },
-        { "name": "payment_method",                "type": "STRING",    "nullable": true,  "description": "Payment method used (e.g. credit_card, google_pay)" },
-        { "name": "payment_status",                "type": "STRING",    "nullable": true,  "description": "Status of the payment (e.g. paid, refunded)" },
-        { "name": "shipping_address_country",      "type": "STRING",    "nullable": true,  "description": "Country of the shipping address" },
-        { "name": "shipping_address_city",         "type": "STRING",    "nullable": true,  "description": "City of the shipping address" },
-        { "name": "shipping_method",               "type": "STRING",    "nullable": true,  "description": "Shipping method selected (e.g. standard, overnight)" },
-        { "name": "shipping_cost",                 "type": "FLOAT",     "nullable": true,  "description": "Cost of shipping" },
-        { "name": "subtotal",                      "type": "FLOAT",     "nullable": true,  "description": "Order subtotal before discounts and taxes" },
-        { "name": "discount_code",                 "type": "STRING",    "nullable": true,  "description": "Discount code applied to the order" },
-        { "name": "discount_amount",               "type": "FLOAT",     "nullable": true,  "description": "Total discount amount applied" },
-        { "name": "tax_amount",                    "type": "FLOAT",     "nullable": true,  "description": "Total tax amount charged" },
-        { "name": "total_amount",                  "type": "FLOAT",     "nullable": true,  "description": "Final total amount charged to the customer" },
-        { "name": "session_id",                    "type": "STRING",    "nullable": true,  "description": "Web session ID associated with the order" },
-        { "name": "device_type",                   "type": "STRING",    "nullable": true,  "description": "Device type used to place the order" },
-        { "name": "acquisition_channel_at_order",  "type": "STRING",    "nullable": true,  "description": "Acquisition channel at the time of ordering" },
-        { "name": "coupon_used",                   "type": "BOOLEAN",   "nullable": true,  "description": "Whether a coupon was used on this order" },
-        { "name": "is_first_order",                "type": "BOOLEAN",   "nullable": true,  "description": "Whether this is the customer's first order" },
-        { "name": "fulfillment_center",            "type": "STRING",    "nullable": true,  "description": "Fulfillment center that processed the order" },
-        { "name": "estimated_delivery_date",       "type": "DATE",      "nullable": true,  "description": "Estimated delivery date" },
-        { "name": "actual_delivery_date",          "type": "DATE",      "nullable": true,  "description": "Actual delivery date" }
+        {
+          "name": "order_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Unique order identifier (UUID)"
+        },
+        {
+          "name": "customer_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Foreign key referencing customers.customer_id"
+        },
+        {
+          "name": "order_date",
+          "type": "TIMESTAMP",
+          "nullable": true,
+          "description": "Date and time the order was placed"
+        },
+        {
+          "name": "order_status",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Current order status (e.g. completed, refunded)"
+        },
+        {
+          "name": "payment_method",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Payment method used (e.g. credit_card, google_pay)"
+        },
+        {
+          "name": "payment_status",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Status of the payment (e.g. paid, refunded)"
+        },
+        {
+          "name": "shipping_address_country",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Country of the shipping address"
+        },
+        {
+          "name": "shipping_address_city",
+          "type": "STRING",
+          "nullable": true,
+          "description": "City of the shipping address"
+        },
+        {
+          "name": "shipping_method",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Shipping method selected (e.g. standard, overnight)"
+        },
+        {
+          "name": "shipping_cost",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Cost of shipping"
+        },
+        {
+          "name": "subtotal",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Order subtotal before discounts and taxes"
+        },
+        {
+          "name": "discount_code",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Discount code applied to the order"
+        },
+        {
+          "name": "discount_amount",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Total discount amount applied"
+        },
+        {
+          "name": "tax_amount",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Total tax amount charged"
+        },
+        {
+          "name": "total_amount",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Final total amount charged to the customer"
+        },
+        {
+          "name": "session_id",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Web session ID associated with the order"
+        },
+        {
+          "name": "device_type",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Device type used to place the order"
+        },
+        {
+          "name": "acquisition_channel_at_order",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Acquisition channel at the time of ordering"
+        },
+        {
+          "name": "coupon_used",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether a coupon was used on this order"
+        },
+        {
+          "name": "is_first_order",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether this is the customer's first order"
+        },
+        {
+          "name": "fulfillment_center",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Fulfillment center that processed the order"
+        },
+        {
+          "name": "estimated_delivery_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Estimated delivery date"
+        },
+        {
+          "name": "actual_delivery_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Actual delivery date"
+        }
       ],
       "delta_columns": [
-        { "name": "_delta_type", "type": "STRING",    "nullable": false, "description": "Type of delta operation: INSERT, UPDATE, or DELETE" },
-        { "name": "_batch_id",   "type": "STRING",    "nullable": false, "description": "Identifier of the batch this record belongs to" },
-        { "name": "_batch_date", "type": "TIMESTAMP", "nullable": false, "description": "Timestamp when the batch was created" }
+        {
+          "name": "_delta_type",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Type of delta operation: INSERT, UPDATE, or DELETE"
+        },
+        {
+          "name": "_batch_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Identifier of the batch this record belongs to"
+        },
+        {
+          "name": "_batch_date",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "description": "Timestamp when the batch was created"
+        }
       ]
     },
     "order_items": {
@@ -77,51 +327,226 @@
         "product_id": "products.product_id"
       },
       "columns": [
-        { "name": "order_item_id",           "type": "STRING",  "nullable": false, "description": "Unique order item identifier (UUID)" },
-        { "name": "order_id",                "type": "STRING",  "nullable": false, "description": "Foreign key referencing orders.order_id" },
-        { "name": "product_id",              "type": "STRING",  "nullable": false, "description": "Foreign key referencing products.product_id" },
-        { "name": "quantity",                "type": "INTEGER", "nullable": true,  "description": "Quantity of the product ordered" },
-        { "name": "unit_price_at_purchase",  "type": "FLOAT",   "nullable": true,  "description": "Unit price of the product at the time of purchase" },
-        { "name": "discount_applied",        "type": "FLOAT",   "nullable": true,  "description": "Discount amount applied to this line item" },
-        { "name": "line_total",              "type": "FLOAT",   "nullable": true,  "description": "Total price for this line item after discount" },
-        { "name": "is_returned",             "type": "BOOLEAN", "nullable": true,  "description": "Whether this item was returned" },
-        { "name": "return_reason",           "type": "STRING",  "nullable": true,  "description": "Reason for the return, if applicable" },
-        { "name": "return_date",             "type": "DATE",    "nullable": true,  "description": "Date the return was processed, if applicable" }
+        {
+          "name": "order_item_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Unique order item identifier (UUID)"
+        },
+        {
+          "name": "order_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Foreign key referencing orders.order_id"
+        },
+        {
+          "name": "product_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Foreign key referencing products.product_id"
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Quantity of the product ordered"
+        },
+        {
+          "name": "unit_price_at_purchase",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Unit price of the product at the time of purchase"
+        },
+        {
+          "name": "discount_applied",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Discount amount applied to this line item"
+        },
+        {
+          "name": "line_total",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Total price for this line item after discount"
+        },
+        {
+          "name": "is_returned",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether this item was returned"
+        },
+        {
+          "name": "return_reason",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Reason for the return, if applicable"
+        },
+        {
+          "name": "return_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Date the return was processed, if applicable"
+        }
       ],
       "delta_columns": [
-        { "name": "_delta_type", "type": "STRING",    "nullable": false, "description": "Type of delta operation: INSERT, UPDATE, or DELETE" },
-        { "name": "_batch_id",   "type": "STRING",    "nullable": false, "description": "Identifier of the batch this record belongs to" },
-        { "name": "_batch_date", "type": "TIMESTAMP", "nullable": false, "description": "Timestamp when the batch was created" }
+        {
+          "name": "_delta_type",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Type of delta operation: INSERT, UPDATE, or DELETE"
+        },
+        {
+          "name": "_batch_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Identifier of the batch this record belongs to"
+        },
+        {
+          "name": "_batch_date",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "description": "Timestamp when the batch was created"
+        }
       ]
     },
     "products": {
       "description": "Product catalogue including pricing, inventory, and performance metrics",
       "primary_key": "product_id",
       "columns": [
-        { "name": "product_id",        "type": "STRING",    "nullable": false, "description": "Unique product identifier (UUID)" },
-        { "name": "sku",               "type": "STRING",    "nullable": true,  "description": "Stock keeping unit code" },
-        { "name": "product_name",      "type": "STRING",    "nullable": true,  "description": "Display name of the product" },
-        { "name": "category",          "type": "STRING",    "nullable": true,  "description": "Top-level product category" },
-        { "name": "subcategory",       "type": "STRING",    "nullable": true,  "description": "Product subcategory" },
-        { "name": "brand",             "type": "STRING",    "nullable": true,  "description": "Brand name of the product" },
-        { "name": "unit_cost",         "type": "FLOAT",     "nullable": true,  "description": "Cost to the business per unit" },
-        { "name": "unit_price",        "type": "FLOAT",     "nullable": true,  "description": "Retail price per unit" },
-        { "name": "discount_eligible", "type": "BOOLEAN",   "nullable": true,  "description": "Whether the product is eligible for discounts" },
-        { "name": "stock_quantity",    "type": "INTEGER",   "nullable": true,  "description": "Current units in stock" },
-        { "name": "weight_kg",         "type": "FLOAT",     "nullable": true,  "description": "Product weight in kilograms" },
-        { "name": "supplier_id",       "type": "STRING",    "nullable": true,  "description": "Identifier of the product supplier" },
-        { "name": "is_active",         "type": "BOOLEAN",   "nullable": true,  "description": "Whether the product is currently active in the catalogue" },
-        { "name": "created_date",      "type": "DATE",      "nullable": true,  "description": "Date the product was added to the catalogue" },
-        { "name": "last_updated_date", "type": "DATE",      "nullable": true,  "description": "Date the product record was last updated" },
-        { "name": "average_rating",    "type": "FLOAT",     "nullable": true,  "description": "Average customer rating (0–5)" },
-        { "name": "review_count",      "type": "INTEGER",   "nullable": true,  "description": "Total number of customer reviews" },
-        { "name": "return_rate",       "type": "FLOAT",     "nullable": true,  "description": "Proportion of units sold that were returned" },
-        { "name": "tags",              "type": "STRING",    "nullable": true,  "description": "Pipe-separated product tags" }
+        {
+          "name": "product_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Unique product identifier (UUID)"
+        },
+        {
+          "name": "sku",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Stock keeping unit code"
+        },
+        {
+          "name": "product_name",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Display name of the product"
+        },
+        {
+          "name": "category",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Top-level product category"
+        },
+        {
+          "name": "subcategory",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Product subcategory"
+        },
+        {
+          "name": "brand",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Brand name of the product"
+        },
+        {
+          "name": "unit_cost",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Cost to the business per unit"
+        },
+        {
+          "name": "unit_price",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Retail price per unit"
+        },
+        {
+          "name": "discount_eligible",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether the product is eligible for discounts"
+        },
+        {
+          "name": "stock_quantity",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Current units in stock"
+        },
+        {
+          "name": "weight_kg",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Product weight in kilograms"
+        },
+        {
+          "name": "supplier_id",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Identifier of the product supplier"
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "nullable": true,
+          "description": "Whether the product is currently active in the catalogue"
+        },
+        {
+          "name": "created_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Date the product was added to the catalogue"
+        },
+        {
+          "name": "last_updated_date",
+          "type": "DATE",
+          "nullable": true,
+          "description": "Date the product record was last updated"
+        },
+        {
+          "name": "average_rating",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Average customer rating (0–5)"
+        },
+        {
+          "name": "review_count",
+          "type": "INTEGER",
+          "nullable": true,
+          "description": "Total number of customer reviews"
+        },
+        {
+          "name": "return_rate",
+          "type": "FLOAT",
+          "nullable": true,
+          "description": "Proportion of units sold that were returned"
+        },
+        {
+          "name": "tags",
+          "type": "STRING",
+          "nullable": true,
+          "description": "Pipe-separated product tags"
+        }
       ],
       "delta_columns": [
-        { "name": "_delta_type", "type": "STRING",    "nullable": false, "description": "Type of delta operation: INSERT, UPDATE, or DELETE" },
-        { "name": "_batch_id",   "type": "STRING",    "nullable": false, "description": "Identifier of the batch this record belongs to" },
-        { "name": "_batch_date", "type": "TIMESTAMP", "nullable": false, "description": "Timestamp when the batch was created" }
+        {
+          "name": "_delta_type",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Type of delta operation: INSERT, UPDATE, or DELETE"
+        },
+        {
+          "name": "_batch_id",
+          "type": "STRING",
+          "nullable": false,
+          "description": "Identifier of the batch this record belongs to"
+        },
+        {
+          "name": "_batch_date",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "description": "Timestamp when the batch was created"
+        }
       ]
     }
   }

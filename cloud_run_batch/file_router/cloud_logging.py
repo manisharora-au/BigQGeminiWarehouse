@@ -34,7 +34,18 @@ class CloudLogging:
     """
 
     @staticmethod
+    def generate_validation_id() -> str:
+        """
+        Generate a unique validation ID without logging.
+        
+        Returns:
+            str: Unique validation identifier (e.g., 'validation_a3f9c2d1')
+        """
+        return f"validation_{str(uuid.uuid4())[:8]}"
+
+    @staticmethod
     def log_validation_result(
+        validation_id: str,
         bucket_name: str, 
         filename: str, 
         metadata: Dict[str, Optional[str]], 
@@ -43,7 +54,7 @@ class CloudLogging:
         error_message: Optional[str] = None,
         expected_value: Optional[str] = None,
         actual_value: Optional[str] = None
-    ) -> str:
+    ) -> None:
         """
         Log validation result for operational monitoring.
         
@@ -51,6 +62,7 @@ class CloudLogging:
         to support real-time monitoring, alerting, and debugging.
         
         Args:
+            validation_id (str): Unique validation identifier
             bucket_name (str): Name of the GCS bucket
             filename (str): Original filename being processed
             metadata (Dict[str, Optional[str]]): Extracted file metadata
@@ -60,20 +72,17 @@ class CloudLogging:
             expected_value (Optional[str]): What was expected (for failures)
             actual_value (Optional[str]): What was found (for failures)
             
-        Returns:
-            str: Validation ID for tracking and correlation
-            
         Example:
+            >>> validation_id = CloudLogging.generate_validation_id()
             >>> CloudLogging.log_validation_result(
+            ...     validation_id,
             ...     "my-bucket",
             ...     "customers_20260101.csv", 
             ...     {"entity_type": "customers", "load_type": "full"},
             ...     True
             ... )
-            'validation_a3f9c2d1-...'
         """
-        # Generate a new Validation ID
-        validation_id = f"validation_{str(uuid.uuid4())[:8]}"
+        # Use the provided validation_id (no longer generating a new one)
         
         # Build structured log entry
         log_entry = {
@@ -115,8 +124,6 @@ class CloudLogging:
                 f"Validation FAILED: {filename} - {failed_check}: {error_message}",
                 extra=log_entry
             )
-        
-        return validation_id
 
     @staticmethod
     def log_batch_processing_start(
