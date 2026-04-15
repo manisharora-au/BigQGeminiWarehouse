@@ -35,10 +35,17 @@ Main routing class that implements business rules for file placement based on va
 ## Routing Rules
 
 ### Validation PASS Files
-- **Destination**: `gs://bucket/processed/{entity_type}/year={YYYY}/month={MM}/day={DD}/filename`
-- **Partitioning**: Hive-style partitioning by entity type and date
-- **Date Source**: Extracted from file metadata (`file_date`) or current date as fallback
-- **Example**: `gs://my-bucket/processed/customers/year=2026/month=01/day=01/customers_20260101.csv`
+
+#### Full Load Files
+- **Destination**: `gs://bucket/processed/{entity_type}/load_type=full/filename`
+- **Partitioning**: Hive-style partitioning by entity type and load type
+- **Example**: `gs://my-bucket/processed/customers/load_type=full/customers_20260101.csv`
+
+#### Delta Load Files  
+- **Destination**: `gs://bucket/processed/{entity_type}/load_type=delta/date={YYYY-MM-DD}/filename`
+- **Partitioning**: Hive-style partitioning by entity type, load type, and date
+- **Date Format**: YYYY-MM-DD (converted from YYYYMMDD internal format)
+- **Example**: `gs://my-bucket/processed/customers/load_type=delta/date=2026-01-01/batch_01_customers_delta.csv`
 
 ### Validation FAIL Files
 - **Destination**: `gs://bucket/failed/filename`
@@ -127,30 +134,31 @@ Main routing class that implements business rules for file placement based on va
 
 ### Routing Decision Matrix
 
-| Validation Status | Destination | Partitioning | Purpose |
-|------------------|-------------|--------------|---------|
-| PASS | `processed/{entity_type}/year={YYYY}/month={MM}/day={DD}/` | Hive partitioning | Ready for processing |
-| FAIL | `failed/` | Flat structure | Manual review |
-| ERROR | `failed/` | Flat structure | Technical remediation |
+| Validation Status | Load Type | Destination | Partitioning | Purpose |
+|------------------|-----------|-------------|--------------|---------|
+| PASS | Full | `processed/{entity_type}/load_type=full/` | Load type partitioning | Ready for processing |
+| PASS | Delta | `processed/{entity_type}/load_type=delta/date={YYYY-MM-DD}/` | Load type + date partitioning | Ready for processing |
+| FAIL | Any | `failed/` | Flat structure | Manual review |
+| ERROR | Any | `failed/` | Flat structure | Technical remediation |
 
 ### Path Generation Examples
 
-#### Successful Customer File
+#### Successful Full Load Customer File
 ```
-Input: customers_20260101.csv (PASS)
-Output: processed/customers/year=2026/month=01/day=01/customers_20260101.csv
+Input: customers_20260101.csv (PASS, load_type=full)
+Output: processed/customers/load_type=full/customers_20260101.csv
+```
+
+#### Successful Delta Customer File
+```
+Input: batch_01_customers_delta.csv (PASS, load_type=delta, file_date=20260414)
+Output: processed/customers/load_type=delta/date=2026-04-14/batch_01_customers_delta.csv
 ```
 
 #### Failed Order File
 ```
 Input: orders_20260201.csv (FAIL)
 Output: failed/orders_20260201.csv
-```
-
-#### Delta File with Batch ID
-```
-Input: batch_01_customers_delta.csv (PASS)
-Output: processed/customers/year=2026/month=04/day=14/batch_01_customers_delta.csv
 ```
 
 ## Performance Characteristics
