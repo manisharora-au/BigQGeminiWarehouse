@@ -39,3 +39,8 @@ terraform/*.tfvars.json
 scripts/ExternalTables.sql
 impCommands/
 .env
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
