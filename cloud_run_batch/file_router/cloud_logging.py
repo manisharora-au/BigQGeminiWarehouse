@@ -237,33 +237,28 @@ class CloudLogging:
         duration_ms: int,
         error_message: Optional[str] = None
     ) -> None:
-        """
-        Log Cloud Storage operations (copy, move, delete).
-        
-        Args:
-            operation (str): Type of operation (copy, move, delete)
-            source_path (str): Source file path
-            destination_path (str): Destination file path
-            success (bool): Whether operation succeeded
-            duration_ms (int): Operation duration
-            error_message (Optional[str]): Error details if failed
-        """
-        severity = logger.info if success else logger.error
         status = "SUCCESS" if success else "FAILED"
-        
-        severity(
-            f"GCS {operation.upper()} {status}: {source_path} -> {destination_path} ({duration_ms}ms)",
-            extra={
-                'operation': operation,
-                'source_path': source_path,
-                'destination_path': destination_path,
-                'success': success,
-                'duration_ms': duration_ms,
-                'error_message': error_message,
-                'event_type': 'gcs_operation',
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }
+
+        message = (
+            f"GCS {operation.upper()} {status}: "
+            f"{source_path} -> {destination_path} ({duration_ms}ms)"
         )
+
+        log_data = {
+            'operation': operation,
+            'source_path': source_path,
+            'destination_path': destination_path,
+            'success': success,
+            'duration_ms': duration_ms,
+            'error_message': error_message,
+            'event_type': 'gcs_operation',
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+
+        if success:
+            logger.info(message, extra=log_data)
+        else:
+            logger.error(message, extra=log_data)
 
     @staticmethod
     def log_governance_event(

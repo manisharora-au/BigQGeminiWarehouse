@@ -111,19 +111,34 @@ class CloudStorageManager:
     Returns:
         Tuple[bool, Optional[str]]: (success, error_message)
     """
-    async def copy_file_to_destination(
-        self, # Why self, because we are using the client and semaphore objects defined in the constructor
+    async def execute_file_operation(
+        self,
+        operation: str,  # "copy" or "move"
         source_bucket_name: str,
-        source_blob_name: str, # Blob name represents the file path in the bucket. It includes the file name and extension.
+        source_blob_name: str,
         destination_bucket_name: str,
         destination_blob_name: str,
         validation_id: Optional[str] = None,
         max_retries: int = 3
-    ) -> Tuple[bool, Optional[str]]: # A tuple is an immutable ordered sequence of elements. 
-        # In the above signature, the return type is a tuple of two elements. 
-        # The first element is a boolean value indicating whether the file was copied successfully. In that scenario the second element will be None.
-        # The second element is an optional string value indicating the error message if the file was not copied successfully. In that scenario the 
-        # second element will be the error message and the first element will be False.
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Execute file operation (copy or move) with retry logic and semaphore control.
+        
+        Args:
+            operation (str): Operation type - "copy" or "move"
+            source_bucket_name (str): Source GCS bucket name
+            source_blob_name (str): Source blob path
+            destination_bucket_name (str): Destination GCS bucket name
+            destination_blob_name (str): Destination blob path
+            validation_id (Optional[str]): Validation ID for correlation
+            max_retries (int): Maximum retry attempts
+            
+        Returns:
+            Tuple[bool, Optional[str]]: (success, error_message)
+        """
+        # Validate operation type
+        if operation not in ["copy", "move"]:
+            return False, f"Invalid operation: {operation}. Supported operations: copy, move"
 
         # The below line acquires a permit from the semaphore.
         # If the semaphore is full, it will wait until a permit is released, and hence the reason for an async implementation.
@@ -138,7 +153,7 @@ class CloudStorageManager:
             # The below code snippet is a retry loop that will retry the file copy operation up to max_retries times.
             for attempt in range(max_retries + 1):
                 try:
-                    #  Just a blind check to ensure the client handle exists
+                    #  Just a blind check to ensure the Storage client handle still exists
                     if self.client is None:
                         error_msg = "Cloud Storage Manager client is not initialized"
                         logger.error(f"{error_msg}")
@@ -191,44 +206,73 @@ class CloudStorageManager:
                     max_wait_seconds = 10
                     poll_interval = 2
                     verification_start = time.time()
+                    copy_verified = False
                     
-                    # Start checking if the target blob exists on destination bucket every 2 seconds for 10 seconds, since the copy 
-                    # operation is eventually consistent.
-                    # destination_blob.exists() is also a blocking GCS SDK call — offloaded to thread pool.
-                    # asyncio.sleep() between polls is non-blocking — the event loop remains free during the wait.
+                    # Start checking if the target blob exists on destination bucket
                     while time.time() - verification_start < max_wait_seconds:
                         destination_exists = await loop.run_in_executor(None, destination_blob.exists)
-                        # The output would be True if the file exists on the destination bucket, False otherwise.
                         if destination_exists:
-                            duration_ms = int((time.time() - start_time) * 1000)
-                            # Log the storage operation to Cloud Logging in async mode.
+                            copy_verified = True
+                            break
+                        
+                        await asyncio.sleep(poll_interval)
+                    
+                    if not copy_verified:
+                        error_msg = f"{operation.capitalize()} verification timeout after {max_wait_seconds}s - destination file not found"
+                        await self._log_storage_operation(
+                            operation, source_path, destination_path, False,
+                            int((time.time() - start_time) * 1000), error_msg, validation_id
+                        )
+                        return False, error_msg
+
+                    # At this point, the copy has been successfully verified
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    
+                    if operation == "copy":
+                        await self._log_storage_operation(
+                            operation=operation,
+                            source_path=source_path,
+                            destination_path=destination_path,
+                            success=True,
+                            duration_ms=duration_ms,
+                            error_message=None,
+                            validation_id=validation_id
+                        )
+                        return True, None
+                        
+                    elif operation == "move":
+                        try:
+                            # Delete source file using run_in_executor for non-blocking operation
+                            await loop.run_in_executor(None, source_blob.delete)
+                            
+                            # Log successful move operation
+                            # Re-calculate duration to include deletion time
+                            final_duration_ms = int((time.time() - start_time) * 1000) 
                             await self._log_storage_operation(
-                                operation="copy",
+                                operation=operation,
                                 source_path=source_path,
                                 destination_path=destination_path,
                                 success=True,
-                                duration_ms=duration_ms,
+                                duration_ms=final_duration_ms,
                                 error_message=None,
                                 validation_id=validation_id
                             )
                             return True, None
-                        
-                        # Else, keep waiting for 2 seconds before next check
-                        await asyncio.sleep(poll_interval)
-                    
-                    # Copy verification timeout. The below block will execute as an else case to the while loop
-                    error_msg = f"Copy verification timeout after {max_wait_seconds}s - destination file not found"
-                    await self._log_storage_operation(
-                        "copy", source_path, destination_path, False,
-                        int((time.time() - start_time) * 1000), error_msg, validation_id
-                    )
-                    return False, error_msg
+                            
+                        except Exception as delete_error:
+                            # Copy succeeded but delete failed
+                            error_msg = f"Move partially failed - file copied but source not deleted: {str(delete_error)}"
+                            await self._log_storage_operation(
+                                operation, source_path, destination_path, False,
+                                int((time.time() - start_time) * 1000), error_msg, validation_id
+                            )
+                            return False, error_msg
 
                 #  The NotFound exception will be raised if the source or destination bucket or file is not found
                 except gcs_exceptions.NotFound as e:
                     error_msg = f"Bucket or file not found: {str(e)}"
                     await self._log_storage_operation(
-                        "copy", source_path, destination_path, False,
+                        operation, source_path, destination_path, False,
                         int((time.time() - start_time) * 1000), error_msg, validation_id
                     )
                     return False, error_msg
@@ -237,19 +281,19 @@ class CloudStorageManager:
                 except gcs_exceptions.Forbidden as e:
                     error_msg = f"Access denied: {str(e)}"
                     await self._log_storage_operation(
-                        "copy", source_path, destination_path, False,
+                        operation, source_path, destination_path, False,
                         int((time.time() - start_time) * 1000), error_msg, validation_id
                     )
                     return False, error_msg
 
                 #  Any other exception will be caught here
                 except Exception as e:
-                    error_msg = f"Copy operation failed (attempt {attempt + 1}): {str(e)}"
+                    error_msg = f"{operation.capitalize()} operation failed (attempt {attempt + 1}): {str(e)}"
                     
-                    # Onlyu log when it is the last attempt and no success
+                    # Only log when it is the last attempt and no success
                     if attempt == max_retries:
                         await self._log_storage_operation(
-                            "copy", source_path, destination_path, False,
+                            operation, source_path, destination_path, False,
                             int((time.time() - start_time) * 1000), error_msg, validation_id
                         )
                         return False, error_msg
@@ -265,75 +309,6 @@ class CloudStorageManager:
                     
             return False, "Max retries exceeded"
 
-    async def move_file_from_inbox_to_destination(
-        self,
-        source_bucket_name: str,
-        source_blob_name: str,
-        destination_bucket_name: str,
-        destination_blob_name: str,
-        validation_id: Optional[str] = None,
-        max_retries: int = 3
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Async move file (copy + delete source) with retry logic.
-        
-        Args:
-            source_bucket_name (str): Source GCS bucket name
-            source_blob_name (str): Source blob path
-            destination_bucket_name (str): Destination GCS bucket name
-            destination_blob_name (str): Destination blob path
-            validation_id (Optional[str]): Validation ID for correlation
-            max_retries (int): Maximum retry attempts
-            
-        Returns:
-            Tuple[bool, Optional[str]]: (success, error_message)
-        """
-        # First copy the file using the method copy_file_to_destination
-        copy_success, copy_error = await self.copy_file_to_destination(source_bucket_name
-                                                                        ,source_blob_name
-                                                                        ,destination_bucket_name
-                                                                        ,destination_blob_name
-                                                                        ,validation_id
-                                                                        ,max_retries
-        )
-        
-        #  If Not True
-        if not copy_success:
-            return False, f"Move failed during copy: {copy_error}"
-        
-        # Then delete the source file using the method delete_file_from_bucket
-        delete_success, delete_error = await self.delete_file_from_bucket(source_bucket_name
-                                                                        ,source_blob_name
-                                                                        ,validation_id
-                                                                        ,max_retries
-        )
-        
-        # If Not True
-        if not delete_success:
-            # Copy succeeded but delete failed - log this as a warning
-            source_path = f"gs://{source_bucket_name}/{source_blob_name}"
-            destination_path = f"gs://{destination_bucket_name}/{destination_blob_name}"
-            
-            await self._log_storage_operation(
-                "move", source_path, destination_path, False,
-                0, f"Copy succeeded but source delete failed: {delete_error}", validation_id
-            )
-            return False, f"Move partially failed - file copied but source not deleted: {delete_error}"
-        
-        # Both copy and delete succeeded
-        source_path = f"gs://{source_bucket_name}/{source_blob_name}"
-        destination_path = f"gs://{destination_bucket_name}/{destination_blob_name}"
-        
-        await self._log_storage_operation(
-            operation="move", 
-            source_path=source_path, 
-            destination_path=destination_path, 
-            success=True, 
-            duration_ms=0, 
-            error_message=None, 
-            validation_id=validation_id
-        )
-        return True, None
 
     async def delete_file_from_bucket(
         self,
@@ -354,7 +329,7 @@ class CloudStorageManager:
         Returns:
             Tuple[bool, Optional[str]]: (success, error_message)
         """
-        #  Same semaphore logic applied as in copy_file_to_destination
+        #  Same semaphore logic applied as in execute_file_operation
         #  Semaphores are created once in the constructor to allow max number of concurrent operations to occuer. 
         #  Effectively, if there are copy operations occuring elsewhere, the delete operation will wait for the semaphore to be released.
         async with self.semaphore:
@@ -475,51 +450,3 @@ class CloudStorageManager:
                                                     , None if validation_id is None else validation_id  # Validation ID arg
         )
 
-    def get_blob_size(self, bucket_name: str, blob_name: str) -> Optional[int]:
-        """
-        Get the size of a blob in bytes.
-        
-        Args:
-            bucket_name (str): GCS bucket name
-            blob_name (str): Blob path
-            
-        Returns:
-            Optional[int]: Size in bytes, None if blob doesn't exist
-        """
-        try:
-            #  Get a handle to the bucket
-            bucket = self.client.bucket(bucket_name)
-            #  Get a handle to the blob
-            blob = bucket.blob(blob_name)
-            
-            if blob.exists():
-                blob.reload()  # Refresh metadata
-                return blob.size
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error getting blob size for {bucket_name}/{blob_name}: {e}")
-            return None
-
-    def blob_exists(self, bucket_name: str, blob_name: str) -> bool:
-        """
-        Check if a blob exists in GCS.
-        
-        Args:
-            bucket_name (str): GCS bucket name
-            blob_name (str): Blob path
-            
-        Returns:
-            bool: True if blob exists, False otherwise
-        """
-        try:
-            #  Get a handle to the bucket. These are not GCS Blocking calls
-            bucket = self.client.bucket(bucket_name)
-            #  Get a handle to the blob
-            blob = bucket.blob(blob_name)
-            #  Check if the blob exists
-            return blob.exists()
-            
-        except Exception as e:
-            logger.error(f"Error checking blob existence for {bucket_name}/{blob_name}: {e}")
-            return False

@@ -75,10 +75,16 @@ class FileRouter:
 
     def _generate_destination_path(self, validation_result: ValidationResult) -> str:
         """
-        Generate destination path for processed files based on load type. The path is prepared to support HIVE partitioning
-        
-        Args:
-            validation_result (ValidationResult): Validation result containing metadata
+        Generate destination path for processed files based on load type. The path is prepared to support HIVE partitioning     
+
+        Attributes:
+            filename (str): Name of the validated file
+            validation_id (str): Unique validation identifier
+            passed (bool): Whether validation passed
+            failed_checks (List[str]): List of failed validation check names
+            error_details (Dict[str, str]): Detailed error information per failed check
+            metadata (Dict[str, Optional[str]]): Extracted file metadata
+            file_size_bytes (Optional[int]): Size of the file in bytes
             
         Returns:
             str: Destination path based on load type
@@ -105,151 +111,14 @@ class FileRouter:
                 now = datetime.now(timezone.utc)
                 formatted_date = f"{now.year}-{now.month:02d}-{now.day:02d}"
             
+            # Verify if Formatted date is a valid date
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', formatted_date):
+                raise ValueError(f"Invalid date format: {formatted_date}")
+            
             return f"processed/{entity_type}/load_type=delta/date={formatted_date}/{validation_result.filename}"
         else:
             # Fallback for unknown load types
             return f"processed/{entity_type}/load_type=full/{validation_result.filename}"
-
-    def test_generate_destination_path(self) -> None:
-        """
-        Test method for _generate_destination_path with various scenarios.
-        
-        This method tests the new load_type partitioning pattern for both
-        full and delta files with different date scenarios.
-        """
-        from .file_validator import ValidationResult
-        
-        print("🧪 Testing _generate_destination_path method")
-        print("=" * 60)
-        
-        # Test Case 1: Full load customer file
-        print("\n📋 Test Case 1: Full Load Customer File")
-        full_metadata = {
-            'entity_type': 'customers',
-            'load_type': 'full',
-            'file_date': '20260101',
-            'batch_id': None
-        }
-        full_result = ValidationResult(
-            filename="customers_20260101.csv",
-            validation_id="test_001",
-            passed=True,
-            failed_checks=[],
-            error_details={},
-            metadata=full_metadata,
-            file_size_bytes=1024
-        )
-        
-        full_path = self._generate_destination_path(full_result)
-        expected_full = "processed/customers/load_type=full/customers_20260101.csv"
-        print(f"Input: {full_result.filename}")
-        print(f"Expected: {expected_full}")
-        print(f"Actual:   {full_path}")
-        print(f"✅ Match: {full_path == expected_full}")
-        
-        # Test Case 2: Delta load customer file with valid date
-        print("\n📋 Test Case 2: Delta Load Customer File (Valid Date)")
-        delta_metadata = {
-            'entity_type': 'customers',
-            'load_type': 'delta',
-            'file_date': '20260414',
-            'batch_id': 'batch_001'
-        }
-        delta_result = ValidationResult(
-            filename="batch_01_customers_delta.csv",
-            validation_id="test_002",
-            passed=True,
-            failed_checks=[],
-            error_details={},
-            metadata=delta_metadata,
-            file_size_bytes=2048
-        )
-        
-        delta_path = self._generate_destination_path(delta_result)
-        expected_delta = "processed/customers/load_type=delta/date=2026-04-14/batch_01_customers_delta.csv"
-        print(f"Input: {delta_result.filename}")
-        print(f"Expected: {expected_delta}")
-        print(f"Actual:   {delta_path}")
-        print(f"✅ Match: {delta_path == expected_delta}")
-        
-        # Test Case 3: Delta load with invalid date (fallback to current date)
-        print("\n📋 Test Case 3: Delta Load with Invalid Date (Current Date Fallback)")
-        delta_invalid_metadata = {
-            'entity_type': 'orders',
-            'load_type': 'delta',
-            'file_date': None,  # Invalid date
-            'batch_id': 'batch_002'
-        }
-        delta_invalid_result = ValidationResult(
-            filename="batch_02_orders_delta.csv",
-            validation_id="test_003",
-            passed=True,
-            failed_checks=[],
-            error_details={},
-            metadata=delta_invalid_metadata,
-            file_size_bytes=4096
-        )
-        
-        delta_invalid_path = self._generate_destination_path(delta_invalid_result)
-        # Current date will vary, so we just check the pattern
-        print(f"Input: {delta_invalid_result.filename}")
-        print(f"Output: {delta_invalid_path}")
-        print(f"✅ Contains load_type=delta: {'load_type=delta' in delta_invalid_path}")
-        print(f"✅ Contains date= pattern: {'date=' in delta_invalid_path}")
-        
-        # Test Case 4: Unknown load type (fallback to full)
-        print("\n📋 Test Case 4: Unknown Load Type (Fallback to Full)")
-        unknown_metadata = {
-            'entity_type': 'products',
-            'load_type': 'unknown_type',
-            'file_date': '20260301',
-            'batch_id': None
-        }
-        unknown_result = ValidationResult(
-            filename="products_20260301.csv",
-            validation_id="test_004",
-            passed=True,
-            failed_checks=[],
-            error_details={},
-            metadata=unknown_metadata,
-            file_size_bytes=8192
-        )
-        
-        unknown_path = self._generate_destination_path(unknown_result)
-        expected_unknown = "processed/products/load_type=full/products_20260301.csv"
-        print(f"Input: {unknown_result.filename}")
-        print(f"Expected: {expected_unknown}")
-        print(f"Actual:   {unknown_path}")
-        print(f"✅ Match: {unknown_path == expected_unknown}")
-        
-        # Test Case 5: Order Items Full Load
-        print("\n📋 Test Case 5: Order Items Full Load")
-        order_items_metadata = {
-            'entity_type': 'order_items',
-            'load_type': 'full',
-            'file_date': '20260501',
-            'batch_id': None
-        }
-        order_items_result = ValidationResult(
-            filename="order_items_20260501.csv",
-            validation_id="test_005",
-            passed=True,
-            failed_checks=[],
-            error_details={},
-            metadata=order_items_metadata,
-            file_size_bytes=16384
-        )
-        
-        order_items_path = self._generate_destination_path(order_items_result)
-        expected_order_items = "processed/order_items/load_type=full/order_items_20260501.csv"
-        print(f"Input: {order_items_result.filename}")
-        print(f"Expected: {expected_order_items}")
-        print(f"Actual:   {order_items_path}")
-        print(f"✅ Match: {order_items_path == expected_order_items}")
-        
-        print("\n" + "=" * 60)
-        print("🎉 Path generation testing completed!")
-        print("📊 All test cases validate the new load_type partitioning pattern")
 
     async def _route_single_file(
         self,
@@ -280,10 +149,13 @@ class FileRouter:
                 routing_type = "failed"
             
             # Move file to destination
-            move_success = await self.storage_manager.move_file_from_inbox_to_destination(
-                bucket_name=bucket_name,
-                source_filename=validation_result.filename,
-                destination_path=destination_path
+            move_success, move_error = await self.storage_manager.execute_file_operation(
+                operation="move",
+                source_bucket_name=bucket_name,
+                source_blob_name=source_path,
+                destination_bucket_name=bucket_name,
+                destination_blob_name=destination_path,
+                validation_id=validation_result.validation_id
             )
             
             end_time = datetime.now()
@@ -317,7 +189,7 @@ class FileRouter:
                     source_path=source_path,
                     destination_path=destination_path,
                     routing_type=routing_type,
-                    error_message="File move operation failed",
+                    error_message=f"File move operation failed: {move_error}",
                     duration_ms=duration_ms
                 )
                 
